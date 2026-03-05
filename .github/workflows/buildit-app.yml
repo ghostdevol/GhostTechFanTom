@@ -1,0 +1,60 @@
+name: Build App
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+      # 1️⃣ Checkout the repository
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # 2️⃣ Setup Node.js
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: 'npm'
+
+      # 3️⃣ Install dependencies (npm ci if lock file exists, else npm install)
+      - name: Install Dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            echo "package-lock.json found, running npm ci"
+            npm ci
+          else
+            echo "No lock file found, running npm install"
+            npm install
+          fi
+
+      # 4️⃣ Build the app
+      - name: Build App
+        run: |
+          if [ -f package.json ]; then
+            if npm run | grep -q 'build'; then
+              echo "Running npm run build"
+              npm run build
+            else
+              echo "No build script found, skipping build step"
+            fi
+          else
+            echo "No package.json found, nothing to build"
+          fi
+
+      # 5️⃣ Upload build artifacts
+      - name: Upload Build Artifacts
+        if: success() && (exists('build') || exists('dist'))
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-build
+          path: |
+            build
+            dist
