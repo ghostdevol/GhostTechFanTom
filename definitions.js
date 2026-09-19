@@ -84,6 +84,7 @@ const Defs = (() => {
     function register(xmlText) {
         const def = parseDefinition(xmlText);
         if (!def.romid.xmlid) throw new Error('definition has no <xmlid>');
+        try { def.tables = parseTables(xmlText); } catch (e) { def.tables = []; }
         registry.set(def.romid.xmlid, def);
         return def;
     }
@@ -108,13 +109,191 @@ const Defs = (() => {
         const parent = registry.get(def.base);
         if (!parent) return def; // base not loaded — use child as-is
         const merged = resolveBase(parent);
+        // tables merge by name: child definitions override same-named tables
+        const byName = new Map();
+        merged.tables.forEach(t => byName.set(t.name, t));
+        def.tables.forEach(t => byName.set(t.name, t));
         return {
             base: def.base,
             romid: { ...merged.romid, ...def.romid },
             checksums: def.checksums.length ? def.checksums : merged.checksums,
-            tables: [...merged.tables, ...def.tables],
+            tables: [...byName.values()],
             raw: def.raw,
         };
+    }
+
+    // ---- tables ----
+    // Schema (RomRaider-derived, as used by the A2L template):
+    //   <table type="2D"|"3D" name="..." category="a//b//c"
+    //          storagetype="uint8"|"uint16" sizex="8" [sizey="8"] userlevel="1">
+    //     <scaling base="<scalingbase name>"/>
+    //     <table type="Static X Axis" name="..." sizex="8">
+    //       <data>0</data> ...
+    //     </table>
+    //     <description><!--symbol-->text</description>
+    //   </table>
+    // NOTE: table elements carry no ROM address in these files — address
+    // resolution is still TBD (see RomTable); table.address stays null
+    // until that lands, and readTableValues() returns null without one.
+    function getXmlDoc(xmlText) {
+        if (typeof DOMParser !== 'undefined') {
+            return new DOMParser().parseFromString(xmlText, 'text/xml');
+        }
+        if (typeof require !== 'undefined') {
+            const { DOMParser: XDP } = require('xmldom');
+            return new XDP().parseFromString(xmlText, 'text/xml');
+        }
+        throw new Error('no XML parser available');
+    }
+    function childEls(el, name) {
+        const out = [];
+        const want = name.toLowerCase();
+        for (let n = el.firstChild; n; n = n.nextSibling) {
+            if (n.nodeType === 1 && n.nodeName.toLowerCase() === want) out.push(n);
+        }
+        return out;
+    }
+    function textOf(el) {
+        return (el.textContent || '').trim();
+    }
+    function extractSymbol(descEl) {
+        for (let n = descEl.firstChild; n; n = n.nextSibling) {
+            if (n.nodeType === 8) { // comment node: <!--mTTPINT-->
+                const m = /([A-Za-z0-9_]+)/.exec(n.nodeValue || '');
+                if (m) return m[1];
+            }
+        }
+        return null;
+    }
+
+    // scalingbase registry: name -> {units, expression, to_byte, format}
+    const scalings = new Map();
+    function registerScalings(xmlText) {
+        const doc = getXmlDoc(xmlText);
+        ['scalingbase', 'Scalingbase'].forEach(tagName => {
+            const els = doc.getElementsByTagName(tagName);
+            for (let i = 0; i < els.length; i++) {
+                const e = els[i];
+                const name = e.getAttribute('name');
+                if (name) scalings.set(name, {
+                    name,
+                    units: e.getAttribute('units') || '',
+                    expression: e.getAttribute('expression') || 'x',
+                    toByte: e.getAttribute('to_byte') || 'x',
+                    format: e.getAttribute('format') || '0.00',
+                });
+            }
+        });
+        return scalings.size;
+    }
+    // safe math-expression evaluator (whitelisted chars only)
+    function makeFn(expr) {
+        const clean = String(expr).trim();
+        if (!/^[\dx\s\+\-\*\/\.\(\)]+$/i.test(clean)) {
+            throw new Error('unsafe scaling expression: ' + expr);
+        }
+        return new Function('x', `'use strict'; return (${clean});`);
+    }
+    function scalingFns(s) {
+        if (!s._toDisp) {
+            s._toDisp = makeFn(s.expression);
+            s._toByte = makeFn(s.toByte);
+        }
+        return s;
+    }
+    function toDisplay(raw, scalingName) {
+        const s = scalings.get(scalingName);
+        if (!s) return raw;
+        return scalingFns(s)._toDisp(raw);
+    }
+    function toRaw(display, scalingName) {
+        const s = scalings.get(scalingName);
+        if (!s) return Math.round(display);
+        return Math.round(scalingFns(s)._toByte(display));
+    }
+
+    function parseAxisEl(a) {
+        return {
+            type: a.getAttribute('type') || '',
+            name: a.getAttribute('name') || '',
+            size: parseInt(a.getAttribute('sizex') || '0', 10),
+            values: childEls(a, 'data').map(d => parseFloat(textOf(d))),
+            address: null, // dynamic (non-static) axes: address TBD
+        };
+    }
+    function parseTableEl(t) {
+        const scalingEl = childEls(t, 'scaling')[0];
+        const descEl = childEls(t, 'description')[0];
+        return {
+            kind: 'table',
+            type: t.getAttribute('type') || '',           // 2D | 3D
+            name: t.getAttribute('name') || '',
+            category: (t.getAttribute('category') || '').split('//'),
+            storagetype: t.getAttribute('storagetype') || 'uint8',
+            sizex: parseInt(t.getAttribute('sizex') || '0', 10),
+            sizey: parseInt(t.getAttribute('sizey') || '0', 10),
+            userlevel: parseInt(t.getAttribute('userlevel') || '0', 10),
+            scaling: scalingEl ? scalingEl.getAttribute('base') : null,
+            axes: childEls(t, 'table')
+                .filter(a => /axis/i.test(a.getAttribute('type') || ''))
+                .map(parseAxisEl),
+            description: descEl ? textOf(descEl) : '',
+            symbol: descEl ? extractSymbol(descEl) : null,
+            address: null, // TODO: ROM address resolution (see RomTable)
+        };
+    }
+    function parseTables(xmlText) {
+        const doc = getXmlDoc(xmlText);
+        const tables = [];
+        const all = doc.getElementsByTagName('table');
+        for (let i = 0; i < all.length; i++) {
+            const t = all[i];
+            // skip nested axis tables — parsed with their parent
+            let p = t.parentNode, nested = false;
+            while (p) {
+                if (p.nodeType === 1 && p.nodeName.toLowerCase() === 'table') { nested = true; break; }
+                p = p.parentNode;
+            }
+            if (nested) continue;
+            tables.push(parseTableEl(t));
+        }
+        return tables;
+    }
+
+    // raw value extraction / write-back (needs table.address; big-endian aware)
+    function storageSize(storagetype) {
+        return storagetype === 'uint16' ? 2 : 1;
+    }
+    function readTableValues(romBytes, table, endian) {
+        if (table.address == null) return null; // no address yet
+        const b = romBytes instanceof Uint8Array ? romBytes : new Uint8Array(romBytes);
+        const be = (endian || 'Big').toLowerCase().startsWith('big');
+        const sz = storageSize(table.storagetype);
+        const n = table.sizex * (table.sizey || 1);
+        const vals = [];
+        for (let i = 0; i < n; i++) {
+            const a = table.address + i * sz;
+            vals.push(sz === 1 ? b[a] : (be ? (b[a] << 8) | b[a + 1] : b[a] | (b[a + 1] << 8)));
+        }
+        return vals;
+    }
+    function readTableScaled(romBytes, table, endian) {
+        const raw = readTableValues(romBytes, table, endian);
+        if (!raw) return null;
+        return raw.map(v => toDisplay(v, table.scaling));
+    }
+    function writeTableValues(romBytes, table, endian, rawVals) {
+        if (table.address == null) return false;
+        const b = romBytes instanceof Uint8Array ? romBytes : new Uint8Array(romBytes);
+        const be = (endian || 'Big').toLowerCase().startsWith('big');
+        const sz = storageSize(table.storagetype);
+        rawVals.forEach((v, i) => {
+            const a = table.address + i * sz;
+            if (sz === 1) b[a] = v & 0xFF;
+            else if (be) { b[a] = (v >> 8) & 0xFF; b[a + 1] = v & 0xFF; }
+            else { b[a] = v & 0xFF; b[a + 1] = (v >> 8) & 0xFF; }
+        });
+        return true;
     }
 
     // ---- checksums ----
@@ -156,10 +335,13 @@ const Defs = (() => {
     }
 
     return {
-        register, parseDefinition, matchRom, resolveBase,
+        register, parseDefinition, parseTables, registerScalings,
+        matchRom, resolveBase,
         computeChecksum, fixChecksums,
+        toDisplay, toRaw, readTableValues, readTableScaled, writeTableValues,
         get: (xmlid) => registry.get(xmlid),
         list: () => [...registry.keys()],
+        scalingList: () => [...scalings.keys()],
     };
 })();
 
