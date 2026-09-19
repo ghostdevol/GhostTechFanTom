@@ -213,10 +213,16 @@ const Defs = (() => {
     }
 
     function parseAxisEl(a) {
+        // RomTableAxis carries its own StorageAddress + Endian (per C# model);
+        // attribute names vary by definition file version — try several.
+        const addrAttr = a.getAttribute('storageaddress') || a.getAttribute('address') || a.getAttribute('storageAddress');
         return {
             type: a.getAttribute('type') || '',
             name: a.getAttribute('name') || '',
             size: parseInt(a.getAttribute('sizex') || '0', 10),
+            storagetype: a.getAttribute('storagetype') || null,
+            endian: a.getAttribute('endian') || null,
+            storageAddress: addrAttr != null && addrAttr !== '' ? hex(addrAttr) : null,
             values: childEls(a, 'data').map(d => parseFloat(textOf(d))),
             address: null, // dynamic (non-static) axes: address TBD
         };
@@ -224,6 +230,9 @@ const Defs = (() => {
     function parseTableEl(t) {
         const scalingEl = childEls(t, 'scaling')[0];
         const descEl = childEls(t, 'description')[0];
+        // RomTable likely carries StorageAddress too (axis class does);
+        // try several attribute spellings — stays null if absent.
+        const addrAttr = t.getAttribute('storageaddress') || t.getAttribute('address') || t.getAttribute('storageAddress');
         return {
             kind: 'table',
             type: t.getAttribute('type') || '',           // 2D | 3D
@@ -239,7 +248,8 @@ const Defs = (() => {
                 .map(parseAxisEl),
             description: descEl ? textOf(descEl) : '',
             symbol: descEl ? extractSymbol(descEl) : null,
-            address: null, // TODO: ROM address resolution (see RomTable)
+            storageAddress: addrAttr != null && addrAttr !== '' ? hex(addrAttr) : null,
+            address: null, // = storageAddress once confirmed; ROM address resolution TBD
         };
     }
     function parseTables(xmlText) {
@@ -260,19 +270,24 @@ const Defs = (() => {
         return tables;
     }
 
-    // raw value extraction / write-back (needs table.address; big-endian aware)
+    // raw value extraction / write-back (needs a ROM address;
+    // uses table.address, falling back to table.storageAddress)
     function storageSize(storagetype) {
         return storagetype === 'uint16' ? 2 : 1;
     }
+    function tableAddress(table) {
+        return table.address != null ? table.address : table.storageAddress;
+    }
     function readTableValues(romBytes, table, endian) {
-        if (table.address == null) return null; // no address yet
+        const addr = tableAddress(table);
+        if (addr == null) return null; // no address yet
         const b = romBytes instanceof Uint8Array ? romBytes : new Uint8Array(romBytes);
         const be = (endian || 'Big').toLowerCase().startsWith('big');
         const sz = storageSize(table.storagetype);
         const n = table.sizex * (table.sizey || 1);
         const vals = [];
         for (let i = 0; i < n; i++) {
-            const a = table.address + i * sz;
+            const a = addr + i * sz;
             vals.push(sz === 1 ? b[a] : (be ? (b[a] << 8) | b[a + 1] : b[a] | (b[a + 1] << 8)));
         }
         return vals;
@@ -283,12 +298,13 @@ const Defs = (() => {
         return raw.map(v => toDisplay(v, table.scaling));
     }
     function writeTableValues(romBytes, table, endian, rawVals) {
-        if (table.address == null) return false;
+        const addr = tableAddress(table);
+        if (addr == null) return false;
         const b = romBytes instanceof Uint8Array ? romBytes : new Uint8Array(romBytes);
         const be = (endian || 'Big').toLowerCase().startsWith('big');
         const sz = storageSize(table.storagetype);
         rawVals.forEach((v, i) => {
-            const a = table.address + i * sz;
+            const a = addr + i * sz;
             if (sz === 1) b[a] = v & 0xFF;
             else if (be) { b[a] = (v >> 8) & 0xFF; b[a + 1] = v & 0xFF; }
             else { b[a] = v & 0xFF; b[a + 1] = (v >> 8) & 0xFF; }
