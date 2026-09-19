@@ -1066,6 +1066,7 @@
 
     <div class="footer-note">GhostTech FanTom · sim mode — connect a bridge (Tauri <span style="font-family:'Courier New',monospace;">invoke</span>) to drive live data</div>
 
+<script src="definitions.js"></script>
 <script>
 'use strict';
 /* ============================================================
@@ -1348,7 +1349,30 @@ async function doDump() {
     try {
         if (Bridge.tauri) {
             const res = await Bridge.invoke('dump_rom', { ecu: S.ecu });
-            log('dump: ' + JSON.stringify(res), 'ok');
+            log('dump: ' + String(res).split('\n').slice(1).join('\n'), 'ok');
+            // identify the ROM against loaded definitions
+            try {
+                const m = /^DUMP_OK path=(.+)$/m.exec(String(res));
+                if (m) {
+                    const bytes = await Bridge.invoke('read_file_bin', { path: m[1] });
+                    S.romBytes = bytes; // raw dump, kept for table parsing
+                    const def = Defs.matchRom(bytes);
+                    if (def) {
+                        const full = Defs.resolveBase(def);
+                        S.definition = full;
+                        S.romLoaded = true;
+                        document.getElementById('ecuId').textContent = full.romid.ecuid || full.romid.internalidstring;
+                        document.getElementById('romSize').textContent = Math.round(bytes.length / 1024) + ' KB';
+                        document.getElementById('defName').textContent = full.romid.xmlid + ' · ' + full.romid.memmodel;
+                        log(`dump: ${bytes.length} bytes — matched definition ${full.romid.xmlid} (${full.romid.memmodel}, ${full.romid.endian}-endian)`, 'ok');
+                        if (full.checksums.length) log(`dump: ${full.checksums.length} checksum block(s) registered (${full.checksums.map(c => c.type).join(', ')})`, 'info');
+                    } else {
+                        S.romLoaded = true;
+                        document.getElementById('romSize').textContent = Math.round(bytes.length / 1024) + ' KB';
+                        log('dump: no loaded definition matched this ROM — load its XML definition to identify it', 'warn');
+                    }
+                }
+            } catch (e2) { log('dump: ROM loaded but identification failed: ' + e2.message, 'warn'); }
         } else {
             // simulated dump with progress
             for (let p = 0; p <= 100; p += 5) { setProgress(p); await sleep(90); }

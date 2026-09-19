@@ -121,13 +121,20 @@ fn dump_rom(
         .map(PathBuf::from)
         .unwrap_or_else(|| resolve_sidecar(&kernel_for_ecu(&ecu)));
     let kernel = kernel.to_string_lossy().to_string();
-    run_script(&[
+    // absolute dump path: nisprog resolves relative paths against the app's
+    // cwd, so absolutize here and report it back for read_file_bin.
+    let abs_out: PathBuf = std::env::current_dir()
+        .map(|d| d.join(&out_file))
+        .unwrap_or_else(|_| PathBuf::from(&out_file));
+    let abs_out_s = abs_out.to_string_lossy().to_string();
+    let stdout = run_script(&[
         "npconn".to_string(),
         format!("runkernel {kernel}"),
-        format!("dumpmem {out_file} {start} {length}"),
+        format!("dumpmem {abs_out_s} {start} {length}"),
         "stopkernel".to_string(),
         "npdisc".to_string(),
-    ])
+    ])?;
+    Ok(format!("DUMP_OK path={abs_out_s}\n{stdout}"))
 }
 
 /// Flash a (possibly edited) ROM .bin back to the ECU.
@@ -157,6 +164,12 @@ fn flash_rom(
     ])
 }
 
+/// Read a binary file (e.g. a dumped ROM) into the frontend as bytes.
+#[tauri::command]
+fn read_file_bin(path: String) -> Result<Vec<u8>, String> {
+    std::fs::read(&path).map_err(|e| format!("failed to read {path}: {e}"))
+}
+
 /// Escape hatch: run arbitrary nisprog shell commands (e.g. `watch <addr>`,
 /// `diag ...`). Powers the dashboard console. Use with care.
 #[tauri::command]
@@ -167,7 +180,12 @@ fn nisprog_raw(script: String) -> Result<String, String> {
 
 fn main() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![dump_rom, flash_rom, nisprog_raw])
+        .invoke_handler(tauri::generate_handler![
+            dump_rom,
+            flash_rom,
+            nisprog_raw,
+            read_file_bin
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
