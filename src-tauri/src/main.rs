@@ -37,6 +37,32 @@ fn nisprog_path() -> PathBuf {
     PathBuf::from("nisprog.exe")
 }
 
+/// Kernel files are per ECU family: npk_SH7051, npk_SH7055_18, npk_SH7058,
+/// npk_7055_18, ... (see the Binaries folder). Given an ECU label, build the
+/// matching kernel filename.
+fn kernel_for_ecu(ecu: &str) -> String {
+    format!("npk_{}", ecu.trim().to_uppercase())
+}
+
+/// Resolve a filename against the folder nisprog.exe lives in, so
+/// `runkernel` gets an absolute path regardless of the app's working dir.
+/// Absolute paths pass through untouched.
+fn resolve_sidecar(name: &str) -> PathBuf {
+    let p = PathBuf::from(name);
+    if p.is_absolute() {
+        return p;
+    }
+    let np = nisprog_path();
+    if let Some(dir) = np.parent() {
+        let candidate = dir.join(&p);
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+    p
+}
+/// Always terminates the session with `exit`. Blocks until nisprog quits —
+/// dumps/flashes can take minutes; do NOT kill it mid-flash.
 /// Feed a command script to nisprog's interactive shell and collect output.
 /// Always terminates the session with `exit`. Blocks until nisprog quits —
 /// dumps/flashes can take minutes; do NOT kill it mid-flash.
@@ -84,12 +110,17 @@ fn dump_rom(
     out_file: Option<String>,
     start: Option<String>,
     length: Option<String>,
+    ecu: Option<String>,
     kernel: Option<String>,
 ) -> Result<String, String> {
     let out_file = out_file.unwrap_or_else(|| "dump.bin".to_string());
     let start = start.unwrap_or_else(|| "0".to_string());
     let length = length.unwrap_or_else(|| "524288".to_string()); // TODO: your ROM size
-    let kernel = kernel.unwrap_or_else(|| "npkern.bin".to_string()); // TODO: your kernel file
+    let ecu = ecu.unwrap_or_else(|| "SH7055_18".to_string());
+    let kernel = kernel
+        .map(PathBuf::from)
+        .unwrap_or_else(|| resolve_sidecar(&kernel_for_ecu(&ecu)));
+    let kernel = kernel.to_string_lossy().to_string();
     run_script(&[
         "npconn".to_string(),
         format!("runkernel {kernel}"),
@@ -105,11 +136,16 @@ fn dump_rom(
 #[tauri::command]
 fn flash_rom(
     rom_file: Option<String>,
+    ecu: Option<String>,
     kernel: Option<String>,
     confirm: Option<String>,
 ) -> Result<String, String> {
     let rom_file = rom_file.unwrap_or_else(|| "dump.bin".to_string());
-    let kernel = kernel.unwrap_or_else(|| "npkern.bin".to_string()); // TODO: your kernel file
+    let ecu = ecu.unwrap_or_else(|| "SH7055_18".to_string());
+    let kernel = kernel
+        .map(PathBuf::from)
+        .unwrap_or_else(|| resolve_sidecar(&kernel_for_ecu(&ecu)));
+    let kernel = kernel.to_string_lossy().to_string();
     let confirm = confirm.unwrap_or_else(|| "Y".to_string());
     run_script(&[
         "npconn".to_string(),

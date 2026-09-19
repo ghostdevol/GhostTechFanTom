@@ -918,6 +918,16 @@
                     <div class="progress-wrap" id="progressWrap"><div class="progress-fill" id="progressFill"></div></div>
                     <div class="sensor-list" style="margin-top:0.75rem;">
                         <div class="sensor-item"><span class="label">ECU ID</span><span class="value" id="ecuId">--</span></div>
+                        <div class="sensor-item"><span class="label">ECU Family</span>
+                            <select id="ecuSelect" style="background:var(--bg-tertiary);border:1px solid var(--border-color);border-radius:6px;color:var(--text-primary);padding:0.25rem 0.4rem;font-size:0.72rem;outline:none;max-width:130px;">
+                                <option value="SH7051">SH7051</option>
+                                <option value="SH7055_18" selected>SH7055</option>
+                                <option value="SH7055_35">SH7055 (3.5)</option>
+                                <option value="SH7058">SH7058</option>
+                                <option value="7055_18">7055_18</option>
+                                <option value="7058">7058</option>
+                            </select>
+                        </div>
                         <div class="sensor-item"><span class="label">ROM Size</span><span class="value" id="romSize">--</span></div>
                         <div class="sensor-item"><span class="label">Definition</span><span class="value" id="defName" style="font-size:0.7rem;">--</span></div>
                     </div>
@@ -1088,6 +1098,7 @@ const Bridge = {
 const S = {
     connected: false,
     sim: true,                 // sim data generator on/off
+    ecu: 'SH7055_18',          // ECU family -> npk_<family> kernel file
     romLoaded: false,
     dirty: false,
     rpm: 0, boost: -8, temp: 185, afr: 14.7,
@@ -1336,7 +1347,7 @@ async function doDump() {
     log('dump: requesting ROM via nisprog…');
     try {
         if (Bridge.tauri) {
-            const res = await Bridge.invoke('dump_rom', {});
+            const res = await Bridge.invoke('dump_rom', { ecu: S.ecu });
             log('dump: ' + JSON.stringify(res), 'ok');
         } else {
             // simulated dump with progress
@@ -1365,7 +1376,7 @@ async function doFlash() {
     log('flash: erasing + writing blocks…', 'warn');
     try {
         if (Bridge.tauri) {
-            const res = await Bridge.invoke('flash_rom', { maps: { fuel: S.fuelMap, timing: S.timingMap } });
+            const res = await Bridge.invoke('flash_rom', { ecu: S.ecu, maps: { fuel: S.fuelMap, timing: S.timingMap } });
             log('flash: ' + JSON.stringify(res), 'ok');
         } else {
             for (let p = 0; p <= 100; p += 4) { setProgress(p); await sleep(110); }
@@ -1411,6 +1422,10 @@ document.getElementById('connectBtn').addEventListener('click', () => {
     }
 });
 document.getElementById('simBtn').addEventListener('click', () => setSim(!S.sim));
+document.getElementById('ecuSelect').addEventListener('change', (e) => {
+    S.ecu = e.target.value;
+    log('ECU family set to ' + S.ecu + ' — kernel npk_' + S.ecu, 'info');
+});
 document.getElementById('dumpBtn').addEventListener('click', doDump);
 document.getElementById('flashBtn').addEventListener('click', doFlash);
 document.getElementById('consoleInput').addEventListener('keydown', async (e) => {
