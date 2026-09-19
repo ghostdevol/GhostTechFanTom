@@ -15,7 +15,7 @@
 //! output — the sequences below are marked TODO where uncertain.
 
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 /// Locate nisprog.exe:
@@ -102,9 +102,24 @@ fn run_script(commands: &[String]) -> Result<String, String> {
     }
 }
 
+/// Copy a file into a space-free temp staging dir and return the staged
+/// path. nisprog's `runkernel` does NOT accept paths containing spaces
+/// (per the author's USING.txt), and Daniel's "NisROM Tuning Suite"
+/// folder has spaces — so the kernel must be staged before use.
+fn stage_nospace(src: &Path, tag: &str) -> Result<PathBuf, String> {
+    let name = src
+        .file_name()
+        .ok_or_else(|| "staging: bad file name".to_string())?;
+    let mut dir = std::env::temp_dir();
+    dir.push(format!("fantom_{tag}"));
+    std::fs::create_dir_all(&dir).map_err(|e| format!("staging dir failed: {e}"))?;
+    dir.push(name);
+    std::fs::copy(src, &dir).map_err(|e| format!("staging copy failed: {e}"))?;
+    Ok(dir)
+}
+
 /// Dump the ECU ROM to a .bin file.
-/// TODO: confirm `dumpmem` arg order and ROM start/length for your ECU
-/// (`help dumpmem`), and the kernel filename for `runkernel`.
+/// `dumpmem <file> <start> <len>` — arg order confirmed via USING.txt.
 #[tauri::command]
 fn dump_rom(
     out_file: Option<String>,
@@ -113,19 +128,23 @@ fn dump_rom(
     ecu: Option<String>,
     kernel: Option<String>,
 ) -> Result<String, String> {
-    let out_file = out_file.unwrap_or_else(|| "dump.bin".to_string());
     let start = start.unwrap_or_else(|| "0".to_string());
     let length = length.unwrap_or_else(|| "524288".to_string()); // TODO: your ROM size
     let ecu = ecu.unwrap_or_else(|| "SH7055_18".to_string());
     let kernel = kernel
         .map(PathBuf::from)
         .unwrap_or_else(|| resolve_sidecar(&kernel_for_ecu(&ecu)));
+    let kernel = stage_nospace(&kernel, "kernels")?;
     let kernel = kernel.to_string_lossy().to_string();
-    // absolute dump path: nisprog resolves relative paths against the app's
-    // cwd, so absolutize here and report it back for read_file_bin.
-    let abs_out: PathBuf = std::env::current_dir()
-        .map(|d| d.join(&out_file))
-        .unwrap_or_else(|_| PathBuf::from(&out_file));
+    // default dump target: space-free temp dir (dumpmem may share the
+    // runkernel path restriction); absolutized and reported back so the
+    // frontend can load it with read_file_bin.
+    let abs_out: PathBuf = match out_file {
+        Some(f) => std::env::current_dir()
+            .map(|d| d.join(&f))
+            .unwrap_or_else(|_| PathBuf::from(&f)),
+        None => std::env::temp_dir().join("fantom_dump.bin"),
+    };
     let abs_out_s = abs_out.to_string_lossy().to_string();
     let stdout = run_script(&[
         "npconn".to_string(),
@@ -138,8 +157,9 @@ fn dump_rom(
 }
 
 /// Flash a (possibly edited) ROM .bin back to the ECU.
-/// TODO: confirm `flrom` syntax and whether it prompts for confirmation
-/// (`help flrom`) — if it does, the "Y" line below may need adjusting.
+/// `flrom <file>` confirmed via USING.txt, BUT it interactively offers
+/// reflash choices (e.g. selective block reflash) — the `confirm` line is
+/// still a guess until `help flrom` output is checked. Do not use live yet.
 #[tauri::command]
 fn flash_rom(
     rom_file: Option<String>,
@@ -152,7 +172,10 @@ fn flash_rom(
     let kernel = kernel
         .map(PathBuf::from)
         .unwrap_or_else(|| resolve_sidecar(&kernel_for_ecu(&ecu)));
+    let kernel = stage_nospace(&kernel, "kernels")?;
     let kernel = kernel.to_string_lossy().to_string();
+    let rom_file = stage_nospace(Path::new(&rom_file), "roms")?;
+    let rom_file = rom_file.to_string_lossy().to_string();
     let confirm = confirm.unwrap_or_else(|| "Y".to_string());
     run_script(&[
         "npconn".to_string(),
