@@ -37,11 +37,28 @@ fn nisprog_path() -> PathBuf {
     PathBuf::from("nisprog.exe")
 }
 
-/// Kernel files are per ECU family: npk_SH7051, npk_SH7055_18, npk_SH7058,
-/// npk_7055_18, ... (see the Binaries folder). Given an ECU label, build the
-/// matching kernel filename.
+/// Kernel files are per ECU family: npk_7055_18.bin, npk_7058.bin,
+/// npk_SH7051, npk_SH7055_18, ... (see the Binaries folder). Given an ECU
+/// label, build the matching kernel filename.
 fn kernel_for_ecu(ecu: &str) -> String {
     format!("npk_{}", ecu.trim().to_uppercase())
+}
+
+/// Resolve the kernel path: explicit path wins, otherwise try
+/// `<base>.bin` then `<base>` next to nisprog.exe (Binaries ships .bin).
+fn resolve_kernel(ecu: &str, explicit: Option<String>) -> PathBuf {
+    if let Some(k) = explicit {
+        return PathBuf::from(k);
+    }
+    let base = kernel_for_ecu(ecu);
+    let cands = [format!("{base}.bin"), base];
+    for c in &cands {
+        let p = resolve_sidecar(c);
+        if p.exists() {
+            return p;
+        }
+    }
+    resolve_sidecar(&cands[0])
 }
 
 /// Resolve a filename against the folder nisprog.exe lives in, so
@@ -139,9 +156,7 @@ fn dump_rom(
     let start = start.unwrap_or_else(|| "0".to_string());
     let length = length.unwrap_or_else(|| "524288".to_string()); // TODO: your ROM size
     let ecu = ecu.unwrap_or_else(|| "SH7055_18".to_string());
-    let kernel = kernel
-        .map(PathBuf::from)
-        .unwrap_or_else(|| resolve_sidecar(&kernel_for_ecu(&ecu)));
+    let kernel = resolve_kernel(&ecu, kernel);
     let kernel = stage_nospace(&kernel, "kernels")?;
     let kernel = kernel.to_string_lossy().to_string();
     // default dump target: space-free temp dir (dumpmem may share the
@@ -177,9 +192,7 @@ fn flash_rom(
 ) -> Result<String, String> {
     let rom_file = rom_file.unwrap_or_else(|| "dump.bin".to_string());
     let ecu = ecu.unwrap_or_else(|| "SH7055_18".to_string());
-    let kernel = kernel
-        .map(PathBuf::from)
-        .unwrap_or_else(|| resolve_sidecar(&kernel_for_ecu(&ecu)));
+    let kernel = resolve_kernel(&ecu, kernel);
     let kernel = stage_nospace(&kernel, "kernels")?;
     let kernel = kernel.to_string_lossy().to_string();
     let rom_file = stage_nospace(Path::new(&rom_file), "roms")?;

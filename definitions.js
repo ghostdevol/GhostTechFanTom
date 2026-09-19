@@ -18,6 +18,9 @@
        </romid>
        <checksum type="std" start="0" end="0x7FFFF"
                  sumloc="0x5158" xorloc="0x5150" />
+       (suite style: <checksum sumloc="..." xorloc="..."/>; algorithm is the
+       suite's FixChecksums — 32-bit sum+XOR over big-endian words, HR quirk
+       handled — see fixChecksums)
        ...tables live in the base definition (base="A2L")...
      </rom>
 
@@ -215,21 +218,43 @@ const Defs = (() => {
         }
         return s;
     }
-    function toDisplay(raw, scalingName) {
-        const s = scalings.get(scalingName);
+    function toDisplay(raw, scaling) {
+        const s = resolveScaling(scaling);
         if (!s) return raw;
         return scalingFns(s)._toDisp(raw);
     }
-    function toRaw(display, scalingName) {
-        const s = scalings.get(scalingName);
+    function toRaw(display, scaling) {
+        const s = resolveScaling(scaling);
         if (!s) return Math.round(display);
         return Math.round(scalingFns(s)._toByte(display));
+    }
+    // <scaling> child element: either suite-style inline attributes
+    // (expression/to_byte/...) or a RomRaider-style base="name" reference.
+    // Returns an inline scaling object or a registry name (string).
+    function parseScalingEl(s) {
+        if (!s) return null;
+        if (s.getAttribute('expression') || s.getAttribute('to_byte')) {
+            return {
+                name: null,
+                units: s.getAttribute('units') || '',
+                expression: s.getAttribute('expression') || 'x',
+                toByte: s.getAttribute('to_byte') || 'x',
+                format: s.getAttribute('format') || '0.00',
+            };
+        }
+        return s.getAttribute('base') || null;
+    }
+    function resolveScaling(s) {
+        if (!s) return null;
+        if (typeof s === 'string') return scalings.get(s) || null;
+        return s; // inline object
     }
 
     function parseAxisEl(a) {
         // RomTableAxis carries its own StorageAddress + Endian (per C# model);
         // may be an attribute or a child element — try several spellings.
         const addrAttr = propVal(a, ['storageaddress', 'storageAddress', 'address']);
+        const scalingEl = childEls(a, 'scaling')[0];
         return {
             type: a.getAttribute('type') || '',
             name: a.getAttribute('name') || '',
@@ -237,7 +262,13 @@ const Defs = (() => {
             storagetype: a.getAttribute('storagetype') || null,
             endian: propVal(a, ['endian']) || null,
             storageAddress: addrAttr != null ? hex(addrAttr) : null,
-            values: childEls(a, 'data').map(d => parseFloat(textOf(d))),
+            scaling: parseScalingEl(scalingEl),
+            // suite 2D axes carry static values as <data value="..."/>;
+            // RomRaider style uses text content — accept both.
+            values: childEls(a, 'data').map(d => {
+                const v = d.getAttribute('value');
+                return parseFloat(v != null && v !== '' ? v : textOf(d));
+            }),
             address: null, // dynamic (non-static) axes: address TBD
         };
     }
@@ -246,6 +277,10 @@ const Defs = (() => {
         const descEl = childEls(t, 'description')[0];
         // RomTable carries StorageAddress too (attr or child element).
         const addrAttr = propVal(t, ['storageaddress', 'storageAddress', 'address']);
+        const axes = childEls(t, 'table')
+            .filter(a => /axis/i.test(a.getAttribute('type') || ''))
+            .map(parseAxisEl);
+        const findAxis = (re) => axes.find(ax => re.test(ax.type)) || null;
         return {
             kind: 'table',
             type: t.getAttribute('type') || '',           // 2D | 3D
@@ -255,10 +290,10 @@ const Defs = (() => {
             sizex: parseInt(t.getAttribute('sizex') || '0', 10),
             sizey: parseInt(t.getAttribute('sizey') || '0', 10),
             userlevel: parseInt(t.getAttribute('userlevel') || '0', 10),
-            scaling: scalingEl ? scalingEl.getAttribute('base') : null,
-            axes: childEls(t, 'table')
-                .filter(a => /axis/i.test(a.getAttribute('type') || ''))
-                .map(parseAxisEl),
+            scaling: parseScalingEl(scalingEl),
+            axes,
+            xAxis: findAxis(/x\s*axis/i),
+            yAxis: findAxis(/y\s*axis/i),
             description: descEl ? textOf(descEl) : '',
             symbol: descEl ? extractSymbol(descEl) : null,
             storageAddress: addrAttr != null ? hex(addrAttr) : null,
@@ -327,39 +362,47 @@ const Defs = (() => {
     }
 
     // ---- checksums ----
-    // UNVERIFIED ALGORITHM — do not trust for live flashing until checked
-    // against the reference suite on a real dump. Assumed Nissan SH
-    // pattern: 16-bit sum over [start..end] with the sum/xor slots zeroed
-    // during computation; values stored per definition endianness.
-    function computeChecksum(bytes, cs) {
-        const b = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-        let sum = 0;
-        for (let a = cs.start; a <= cs.end; a++) {
-            if (a === cs.sumloc || a === cs.sumloc + 1) continue;
-            if (a === cs.xorloc || a === cs.xorloc + 1) continue;
-            sum = (sum + b[a]) & 0xFFFF;
-        }
-        return sum;
-    }
-
+    // Ported from the suite's MainForm.FixChecksums (ababook/NisROM-Tuning-Suite):
+    // 32-bit wrapping sum + XOR over 4-byte big-endian words of the whole ROM,
+    // skipping the checksum slots themselves. HR-style ROMs (1MB/1.5MB with
+    // 0xFFFF7FFC markers at 0x20008/0x20010) start at 0x8204 and skip 0x20000.
+    // Slot addresses come from <checksum sumloc="..." xorloc="..."/> elements.
+    // Both values are written back big-endian as uint32.
     function fixChecksums(bytes, def) {
         const b = new Uint8Array(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes));
-        const bigEndian = (def.romid.endian || 'Big').toLowerCase().startsWith('big');
+        const getU32 = (a) => (((b[a] << 24) | (b[a + 1] << 16) | (b[a + 2] << 8) | b[a + 3]) >>> 0);
+        const setU32 = (a, v) => {
+            b[a] = (v >>> 24) & 0xFF; b[a + 1] = (v >>> 16) & 0xFF;
+            b[a + 2] = (v >>> 8) & 0xFF; b[a + 3] = v & 0xFF;
+        };
         const applied = [];
         for (const cs of def.checksums) {
-            if (cs.type !== 'std' && cs.type !== 'alt') continue;
-            if ([cs.start, cs.end, cs.sumloc, cs.xorloc].some(Number.isNaN)) continue;
-            if (cs.end >= b.length) continue;
-            const sum = computeChecksum(b, cs);
-            const xr = sum ^ 0xFFFF;
-            if (bigEndian) {
-                b[cs.sumloc] = (sum >> 8) & 0xFF; b[cs.sumloc + 1] = sum & 0xFF;
-                b[cs.xorloc] = (xr >> 8) & 0xFF;  b[cs.xorloc + 1] = xr & 0xFF;
-            } else {
-                b[cs.sumloc] = sum & 0xFF;        b[cs.sumloc + 1] = (sum >> 8) & 0xFF;
-                b[cs.xorloc] = xr & 0xFF;         b[cs.xorloc + 1] = (xr >> 8) & 0xFF;
+            const sumAddress = cs.sumloc, xorAddress = cs.xorloc;
+            if (!Number.isInteger(sumAddress) || !Number.isInteger(xorAddress)) continue;
+            if (sumAddress + 4 > b.length || xorAddress + 4 > b.length) continue;
+            let hrStyle = false;
+            if (b.length > 0x20014 && (b.length === 0x100000 || b.length === 0x180000)) {
+                const c1 = getU32(0x20008), c2 = getU32(0x20010);
+                if (c1 === 0xFFFF7FFC && c2 === c1) hrStyle = true;
             }
-            applied.push({ type: cs.type, sum: '0x' + sum.toString(16).toUpperCase() });
+            const startOffset = hrStyle ? 0x8204 : 0;
+            let sum = 0, xor = 0;
+            for (let count = startOffset; count + 4 <= b.length; count += 4) {
+                if (count === xorAddress || count === sumAddress) continue;
+                if (hrStyle && count === 0x20000) continue;
+                const v = getU32(count);
+                sum = (sum + v) >>> 0;
+                xor = (xor ^ v) >>> 0;
+            }
+            setU32(sumAddress, sum);
+            setU32(xorAddress, xor);
+            applied.push({
+                sumloc: '0x' + sumAddress.toString(16).toUpperCase(),
+                xorloc: '0x' + xorAddress.toString(16).toUpperCase(),
+                sum: '0x' + sum.toString(16).toUpperCase(),
+                xor: '0x' + xor.toString(16).toUpperCase(),
+                hrStyle,
+            });
         }
         return { bytes: b, applied };
     }
@@ -367,7 +410,7 @@ const Defs = (() => {
     return {
         register, parseDefinition, parseTables, registerScalings,
         matchRom, resolveBase,
-        computeChecksum, fixChecksums,
+        fixChecksums,
         toDisplay, toRaw, readTableValues, readTableScaled, writeTableValues,
         get: (xmlid) => registry.get(xmlid),
         list: () => [...registry.keys()],
