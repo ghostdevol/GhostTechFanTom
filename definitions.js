@@ -112,10 +112,15 @@ const Defs = (() => {
         const parent = registry.get(def.base);
         if (!parent) return def; // base not loaded — use child as-is
         const merged = resolveBase(parent);
-        // tables merge by name: child definitions override same-named tables
+        // Tables merge by name, FIELD-wise: a ROM file's stub table
+        // (<table name="..." storageaddress="0x..."/>) inherits every
+        // attribute it doesn't explicitly set from the base template.
         const byName = new Map();
         merged.tables.forEach(t => byName.set(t.name, t));
-        def.tables.forEach(t => byName.set(t.name, t));
+        def.tables.forEach(t => {
+            const base = byName.get(t.name);
+            byName.set(t.name, base ? mergeTable(base, t) : t);
+        });
         return {
             base: def.base,
             romid: { ...merged.romid, ...def.romid },
@@ -125,8 +130,61 @@ const Defs = (() => {
         };
     }
 
+    function mergeTable(baseT, childT) {
+        const ex = childT.explicit || new Set();
+        const hasAttr = (...names) => names.some(n => ex.has(n.toLowerCase()));
+        const m = { ...baseT, name: childT.name || baseT.name, explicit: ex };
+        if (hasAttr('type')) m.type = childT.type;
+        if (hasAttr('category')) m.category = childT.category;
+        if (hasAttr('storagetype')) m.storagetype = childT.storagetype;
+        if (hasAttr('sizex')) m.sizex = childT.sizex;
+        if (hasAttr('sizey')) m.sizey = childT.sizey;
+        if (hasAttr('userlevel')) m.userlevel = childT.userlevel;
+        if (hasAttr('storageaddress', 'address')) {
+            m.storageAddress = childT.storageAddress;
+            m.address = childT.address;
+        }
+        if (hasAttr('endian')) m.endian = childT.endian;
+        if (childT.scaling) m.scaling = childT.scaling;
+        if (childT.axes && childT.axes.length) {
+            // Axes merge by TYPE: the ROM stub's axes carry storageaddress,
+            // the base template's axes carry names/values/scaling.
+            const baseByType = new Map((baseT.axes || []).map(a => [a.type, a]));
+            m.axes = childT.axes.map(ca => {
+                const ba = baseByType.get(ca.type);
+                return ba ? mergeAxis(ba, ca) : ca;
+            });
+            for (const ba of (baseT.axes || [])) {
+                if (!m.axes.some(a => a.type === ba.type)) m.axes.push(ba);
+            }
+            const findAx = (re) => m.axes.find(ax => re.test(ax.type)) || null;
+            m.xAxis = findAx(/x\s*axis/i);
+            m.yAxis = findAx(/y\s*axis/i);
+        }
+        if (childT.description) m.description = childT.description;
+        if (childT.symbol) m.symbol = childT.symbol;
+        return m;
+    }
+
+    function mergeAxis(baseA, childA) {
+        const ex = childA.explicit || new Set();
+        const hasAttr = (...names) => names.some(n => ex.has(n.toLowerCase()));
+        const m = { ...baseA, explicit: ex };
+        if (childA.name) m.name = childA.name;
+        if (hasAttr('sizex')) m.size = childA.size;
+        if (hasAttr('storagetype')) m.storagetype = childA.storagetype;
+        if (hasAttr('endian')) m.endian = childA.endian;
+        if (hasAttr('storageaddress', 'address')) {
+            m.storageAddress = childA.storageAddress;
+            m.address = childA.address;
+        }
+        if (childA.scaling) m.scaling = childA.scaling;
+        if (childA.values && childA.values.length) m.values = childA.values;
+        return m;
+    }
+
     // ---- tables ----
-    // Schema (RomRaider-derived, as used by the A2L template):
+    // Schema (RomRaider-derived, as used by the A2L template + ROM files):
     //   <table type="2D"|"3D" name="..." category="a//b//c"
     //          storagetype="uint8"|"uint16" sizex="8" [sizey="8"] userlevel="1">
     //     <scaling base="<scalingbase name>"/>
@@ -135,9 +193,11 @@ const Defs = (() => {
     //     </table>
     //     <description><!--symbol-->text</description>
     //   </table>
-    // NOTE: table elements carry no ROM address in these files — address
-    // resolution is still TBD (see RomTable); table.address stays null
-    // until that lands, and readTableValues() returns null without one.
+    // ROM files (<rom base="A2L">) carry stub tables with just
+    //   <table name="..." storageaddress="0x..."/>
+    // inheriting everything else from the base template (see resolveBase).
+    // The storageaddress attribute IS the ROM offset (the suite converts the
+    // hex string directly); readTableValues() returns null without one.
     function getXmlDoc(xmlText) {
         if (typeof DOMParser !== 'undefined') {
             return new DOMParser().parseFromString(xmlText, 'text/xml');
@@ -255,13 +315,18 @@ const Defs = (() => {
         // may be an attribute or a child element — try several spellings.
         const addrAttr = propVal(a, ['storageaddress', 'storageAddress', 'address']);
         const scalingEl = childEls(a, 'scaling')[0];
+        const addr = addrAttr != null ? hex(addrAttr) : null;
+        const explicit = new Set();
+        const at = a.attributes || [];
+        for (let i = 0; i < at.length; i++) explicit.add(at[i].name.toLowerCase());
         return {
             type: a.getAttribute('type') || '',
             name: a.getAttribute('name') || '',
+            explicit,
             size: parseInt(a.getAttribute('sizex') || '0', 10),
             storagetype: a.getAttribute('storagetype') || null,
             endian: propVal(a, ['endian']) || null,
-            storageAddress: addrAttr != null ? hex(addrAttr) : null,
+            storageAddress: addr,
             scaling: parseScalingEl(scalingEl),
             // suite 2D axes carry static values as <data value="..."/>;
             // RomRaider style uses text content — accept both.
@@ -269,7 +334,8 @@ const Defs = (() => {
                 const v = d.getAttribute('value');
                 return parseFloat(v != null && v !== '' ? v : textOf(d));
             }),
-            address: null, // dynamic (non-static) axes: address TBD
+            // dynamic (non-static) axes live in the ROM at storageAddress
+            address: addr,
         };
     }
     function parseTableEl(t) {
@@ -281,8 +347,16 @@ const Defs = (() => {
             .filter(a => /axis/i.test(a.getAttribute('type') || ''))
             .map(parseAxisEl);
         const findAxis = (re) => axes.find(ax => re.test(ax.type)) || null;
+        // Track which attributes were explicitly present: ROM files carry
+        // stub tables (<table name="..." storageaddress="..."/>) that inherit
+        // everything else from the base template — merge must not let
+        // defaulted values clobber the base's explicit ones.
+        const explicit = new Set();
+        const at = t.attributes || [];
+        for (let i = 0; i < at.length; i++) explicit.add(at[i].name.toLowerCase());
         return {
             kind: 'table',
+            explicit,
             type: t.getAttribute('type') || '',           // 2D | 3D
             name: t.getAttribute('name') || '',
             category: (t.getAttribute('category') || '').split('//'),
@@ -298,7 +372,9 @@ const Defs = (() => {
             symbol: descEl ? extractSymbol(descEl) : null,
             storageAddress: addrAttr != null ? hex(addrAttr) : null,
             endian: propVal(t, ['endian']) || null,
-            address: null, // = storageAddress once confirmed; ROM address resolution TBD
+            // In suite/RomRaider definitions the storageaddress attribute IS
+            // the ROM offset (MainForm converts the hex string directly).
+            address: addrAttr != null ? hex(addrAttr) : null,
         };
     }
     function parseTables(xmlText) {
@@ -333,32 +409,68 @@ const Defs = (() => {
         const b = romBytes instanceof Uint8Array ? romBytes : new Uint8Array(romBytes);
         const be = (table.endian || endian || 'Big').toLowerCase().startsWith('big');
         const sz = storageSize(table.storagetype);
-        const n = table.sizex * (table.sizey || 1);
-        const vals = [];
-        for (let i = 0; i < n; i++) {
+        const nx = table.sizex || 1, ny = table.sizey || 1;
+        const get = (i) => {
             const a = addr + i * sz;
-            vals.push(sz === 1 ? b[a] : (be ? (b[a] << 8) | b[a + 1] : b[a] | (b[a + 1] << 8)));
+            return sz === 1 ? b[a] : (be ? (b[a] << 8) | b[a + 1] : b[a] | (b[a + 1] << 8));
+        };
+        if (ny <= 1) {
+            const vals = [];
+            for (let i = 0; i < nx; i++) vals.push(get(i));
+            return vals;
         }
-        return vals;
+        const grid = [];
+        for (let y = 0; y < ny; y++) {
+            const row = [];
+            for (let x = 0; x < nx; x++) row.push(get(y * nx + x));
+            grid.push(row);
+        }
+        return grid;
     }
     function readTableScaled(romBytes, table, endian) {
         const raw = readTableValues(romBytes, table, endian);
         if (!raw) return null;
-        return raw.map(v => toDisplay(v, table.scaling));
+        const sc = (v) => toDisplay(v, table.scaling);
+        return Array.isArray(raw[0]) ? raw.map(row => row.map(sc)) : raw.map(sc);
     }
-    function writeTableValues(romBytes, table, endian, rawVals) {
+    function writeTableValues(romBytes, table, rawVals, endian) {
         const addr = tableAddress(table);
         if (addr == null) return false;
         const b = romBytes instanceof Uint8Array ? romBytes : new Uint8Array(romBytes);
         const be = (table.endian || endian || 'Big').toLowerCase().startsWith('big');
         const sz = storageSize(table.storagetype);
-        rawVals.forEach((v, i) => {
+        const flat = Array.isArray(rawVals[0]) ? rawVals.flat() : rawVals;
+        flat.forEach((v, i) => {
             const a = addr + i * sz;
+            if (a + sz > b.length) return;
             if (sz === 1) b[a] = v & 0xFF;
             else if (be) { b[a] = (v >> 8) & 0xFF; b[a + 1] = v & 0xFF; }
             else { b[a] = v & 0xFF; b[a + 1] = (v >> 8) & 0xFF; }
         });
         return true;
+    }
+    // Dynamic axis values live in the ROM at the axis's storageAddress.
+    // count defaults to the axis's own size; pass the table's sizex/sizey
+    // when the axis declares none (RomRaider style).
+    function readAxisValues(romBytes, axis, endian, count) {
+        if (!axis || axis.storageAddress == null) {
+            // static axis: values are baked into the definition
+            return (axis && axis.values) || [];
+        }
+        const b = romBytes instanceof Uint8Array ? romBytes : new Uint8Array(romBytes);
+        const be = (axis.endian || endian || 'Big').toLowerCase().startsWith('big');
+        const sz = storageSize(axis.storagetype || 'uint8');
+        const n = count || axis.size || 0;
+        const vals = [];
+        for (let i = 0; i < n; i++) {
+            const a = axis.storageAddress + i * sz;
+            vals.push(sz === 1 ? b[a] : (be ? (b[a] << 8) | b[a + 1] : b[a] | (b[a + 1] << 8)));
+        }
+        return vals;
+    }
+    function readAxisScaled(romBytes, axis, endian, count) {
+        const raw = readAxisValues(romBytes, axis, endian, count);
+        return raw.map(v => toDisplay(v, axis.scaling));
     }
 
     // ---- checksums ----
@@ -375,11 +487,17 @@ const Defs = (() => {
             b[a] = (v >>> 24) & 0xFF; b[a + 1] = (v >>> 16) & 0xFF;
             b[a + 2] = (v >>> 8) & 0xFF; b[a + 3] = v & 0xFF;
         };
+        // Port of MainForm.FixChecksums: the suite iterates every <checksum>
+        // element and OVERWRITES its checksumXOR/checksumSum each time, so
+        // only the LAST element in the file takes effect. (start/end/type
+        // attributes are ignored — the whole ROM is always checksummed.)
+        const cs = (def.checksums || []).filter(c =>
+            Number.isInteger(c.sumloc) && Number.isInteger(c.xorloc) &&
+            c.sumloc + 4 <= b.length && c.xorloc + 4 <= b.length
+        ).pop();
         const applied = [];
-        for (const cs of def.checksums) {
+        if (cs) {
             const sumAddress = cs.sumloc, xorAddress = cs.xorloc;
-            if (!Number.isInteger(sumAddress) || !Number.isInteger(xorAddress)) continue;
-            if (sumAddress + 4 > b.length || xorAddress + 4 > b.length) continue;
             let hrStyle = false;
             if (b.length > 0x20014 && (b.length === 0x100000 || b.length === 0x180000)) {
                 const c1 = getU32(0x20008), c2 = getU32(0x20010);
@@ -412,6 +530,7 @@ const Defs = (() => {
         matchRom, resolveBase,
         fixChecksums,
         toDisplay, toRaw, readTableValues, readTableScaled, writeTableValues,
+        readAxisValues, readAxisScaled,
         get: (xmlid) => registry.get(xmlid),
         list: () => [...registry.keys()],
         scalingList: () => [...scalings.keys()],
