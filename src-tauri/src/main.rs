@@ -4,15 +4,24 @@
 //!
 //! nisprog.exe is an INTERACTIVE shell (nisprog> prompt), not a one-shot CLI.
 //! This backend drives it by spawning it with piped stdin, feeding it a
-//! scripted command sequence, then collecting stdout:
+//! scripted command sequence, then collecting stdout. Sequences follow the
+//! suite's bundled USING.txt and were validated against the strings of the
+//! suite's own nisprog.exe:
 //!
-//!   dump : npconn -> runkernel <kern> -> dumpmem <file> <start> <len>
-//!            -> stopkernel -> npdisc
-//!   flash: npconn -> runkernel <kern> -> flrom <romfile>
+//!   dump : npconn -> setdev <N> -> npconf p3 0 -> runkernel <kern>
+//!            -> dumpmem <file> <start> <len> -> stopkernel -> npdisc
+//!   flash: npconn -> setdev <N> -> npconf p3 0 -> runkernel <kern>
+//!            -> flrom <romfile> -> (answer p/y prompts) -> stopkernel -> npdisc
+//!   verif: npconn -> setdev <N> -> runkernel <kern> -> flverif <file>
 //!            -> stopkernel -> npdisc
 //!
-//! Exact flags/sequences still need confirming against `help <command>`
-//! output — the sequences below are marked TODO where uncertain.
+//! Notes:
+//! - The suite's binary takes `setdev <device_no>` (0=7051, 1=7055, 2=7058),
+//!   NOT the name form from newer nisprog docs.
+//! - Key selection is automatic: npconn reads the ECUID and picks the best
+//!   keyset itself. There is no `gk` command in the suite's binary.
+//! - The ini (interface/port/protocol) is auto-loaded; nisprog is spawned
+//!   with cwd = its own folder so it finds it.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -42,6 +51,20 @@ fn nisprog_path() -> PathBuf {
 /// label, build the matching kernel filename.
 fn kernel_for_ecu(ecu: &str) -> String {
     format!("npk_{}", ecu.trim().to_uppercase())
+}
+
+/// setdev device numbers for the suite's nisprog build — verified via
+/// strings on the bundled exe (`setdev <device_no>`):
+/// 0 = 7051 (256KB), 1 = 7055 (512KB), 2 = 7058 (1024KB).
+fn setdev_num_for_ecu(ecu: &str) -> &'static str {
+    let e = ecu.to_uppercase();
+    if e.contains("7058") {
+        "2"
+    } else if e.contains("7051") {
+        "0"
+    } else {
+        "1" // 7055 default
+    }
 }
 
 /// Resolve the kernel path: explicit path wins, otherwise try
@@ -145,6 +168,7 @@ fn stage_nospace(src: &Path, tag: &str) -> Result<PathBuf, String> {
 
 /// Dump the ECU ROM to a .bin file.
 /// `dumpmem <file> <start> <len>` — arg order confirmed via USING.txt.
+/// Length 0 = whole ROM (size inferred from setdev).
 #[tauri::command]
 fn dump_rom(
     out_file: Option<String>,
@@ -154,8 +178,9 @@ fn dump_rom(
     kernel: Option<String>,
 ) -> Result<String, String> {
     let start = start.unwrap_or_else(|| "0".to_string());
-    let length = length.unwrap_or_else(|| "524288".to_string()); // TODO: your ROM size
+    let length = length.unwrap_or_else(|| "0".to_string()); // 0 = full ROM
     let ecu = ecu.unwrap_or_else(|| "SH7055_18".to_string());
+    let devnum = setdev_num_for_ecu(&ecu);
     let kernel = resolve_kernel(&ecu, kernel);
     let kernel = stage_nospace(&kernel, "kernels")?;
     let kernel = kernel.to_string_lossy().to_string();
@@ -171,6 +196,8 @@ fn dump_rom(
     let abs_out_s = abs_out.to_string_lossy().to_string();
     let stdout = run_script(&[
         "npconn".to_string(),
+        format!("setdev {devnum}"),
+        "npconf p3 0".to_string(),
         format!("runkernel {kernel}"),
         format!("dumpmem {abs_out_s} {start} {length}"),
         "stopkernel".to_string(),
@@ -180,9 +207,13 @@ fn dump_rom(
 }
 
 /// Flash a (possibly edited) ROM .bin back to the ECU.
-/// `flrom <file>` confirmed via USING.txt, BUT it interactively offers
-/// reflash choices (e.g. selective block reflash) — the `confirm` line is
-/// still a guess until `help flrom` output is checked. Do not use live yet.
+/// `flrom <file>` offers interactive reflash choices (it can selectively
+/// reflash only modified blocks) and prompts — answer "p" for a practice
+/// dry-run or "y" for real. It may ask MORE THAN ONE question, so `confirm`
+/// can hold several newline-separated answers. DEFAULT IS "p" (dry run):
+/// a dry run normally reports verification errors since it writes nothing.
+/// DO NOT pass "y" unless you are on a bench/spare ECU with a charger
+/// connected and a verified backup. Not live-safe.
 #[tauri::command]
 fn flash_rom(
     rom_file: Option<String>,
@@ -192,17 +223,48 @@ fn flash_rom(
 ) -> Result<String, String> {
     let rom_file = rom_file.unwrap_or_else(|| "dump.bin".to_string());
     let ecu = ecu.unwrap_or_else(|| "SH7055_18".to_string());
+    let devnum = setdev_num_for_ecu(&ecu);
     let kernel = resolve_kernel(&ecu, kernel);
     let kernel = stage_nospace(&kernel, "kernels")?;
     let kernel = kernel.to_string_lossy().to_string();
     let rom_file = stage_nospace(Path::new(&rom_file), "roms")?;
     let rom_file = rom_file.to_string_lossy().to_string();
-    let confirm = confirm.unwrap_or_else(|| "Y".to_string());
-    run_script(&[
+    let confirm = confirm.unwrap_or_else(|| "p".to_string()); // practice/dry-run
+    let mut script = vec![
         "npconn".to_string(),
+        format!("setdev {devnum}"),
+        "npconf p3 0".to_string(),
         format!("runkernel {kernel}"),
         format!("flrom {rom_file}"),
-        confirm,
+    ];
+    script.extend(confirm.split('\n').map(|s| s.to_string()));
+    script.push("stopkernel".to_string());
+    script.push("npdisc".to_string());
+    run_script(&script)
+}
+
+/// Compare a ROM file against the ECU's flash contents (read-only).
+/// `flverif <file>` — "Compare <file> against ROM". Modifies nothing,
+/// useful after a dump (sanity check) or after a flash (verify the write).
+#[tauri::command]
+fn verify_rom(
+    rom_file: String,
+    ecu: Option<String>,
+    kernel: Option<String>,
+) -> Result<String, String> {
+    let ecu = ecu.unwrap_or_else(|| "SH7055_18".to_string());
+    let devnum = setdev_num_for_ecu(&ecu);
+    let kernel = resolve_kernel(&ecu, kernel);
+    let kernel = stage_nospace(&kernel, "kernels")?;
+    let kernel = kernel.to_string_lossy().to_string();
+    let rom_file = stage_nospace(Path::new(&rom_file), "roms")?;
+    let rom_file = rom_file.to_string_lossy().to_string();
+    run_script(&[
+        "npconn".to_string(),
+        format!("setdev {devnum}"),
+        "npconf p3 0".to_string(),
+        format!("runkernel {kernel}"),
+        format!("flverif {rom_file}"),
         "stopkernel".to_string(),
         "npdisc".to_string(),
     ])
@@ -227,6 +289,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             dump_rom,
             flash_rom,
+            verify_rom,
             nisprog_raw,
             read_file_bin
         ])
