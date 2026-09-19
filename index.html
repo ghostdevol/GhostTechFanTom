@@ -33,8 +33,8 @@
         }
 
         body {
-            font-family: 'Segoe UI', 'Roboto', mon: var(--bgospace;
-            background-primary);
+            font-family: 'Segoe UI', 'Roboto', monospace;
+            background: var(--bg-primary);
             color: var(--text-primary);
             min-height: 100vh;
             overflow-x: hidden;
@@ -746,4 +746,669 @@
             padding: 0.5rem;
             background: var(--bg-tertiary);
             border-radius: 8px;
-            
+            border: 1px solid var(--border-color);
+        }
+
+        .status-item .dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            margin: 0 auto 0.3rem;
+        }
+
+        .status-item .dot.ok { background: var(--accent-green); box-shadow: var(--glow-green); }
+        .status-item .dot.warn { background: var(--accent-yellow); }
+        .status-item .dot.bad { background: var(--accent-red); }
+
+        .status-item .slabel {
+            font-size: 0.6rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        /* Toolbar / action buttons */
+        .toolbar {
+            display: flex;
+            gap: 0.75rem;
+            flex-wrap: wrap;
+        }
+
+        .btn {
+            padding: 0.6rem 1.1rem;
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
+            background: var(--bg-tertiary);
+            color: var(--text-primary);
+            font-size: 0.8rem;
+            font-weight: 600;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            transition: all 0.2s;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .btn:hover { transform: translateY(-1px); }
+        .btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+
+        .btn.dump { border-color: var(--accent-cyan); color: var(--accent-cyan); }
+        .btn.dump:hover:not(:disabled) { background: var(--accent-cyan); color: var(--bg-primary); box-shadow: var(--glow-cyan); }
+
+        .btn.flash { border-color: var(--accent-orange); color: var(--accent-orange); }
+        .btn.flash:hover:not(:disabled) { background: var(--accent-orange); color: var(--bg-primary); box-shadow: var(--glow-orange); }
+
+        .btn.connect { border-color: var(--accent-green); color: var(--accent-green); }
+        .btn.connect:hover:not(:disabled) { background: var(--accent-green); color: var(--bg-primary); box-shadow: var(--glow-green); }
+        .btn.connect.live { background: var(--accent-green); color: var(--bg-primary); }
+
+        /* Log console */
+        .log-console {
+            background: #05070b;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 0.75rem;
+            height: 180px;
+            overflow-y: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 0.7rem;
+            line-height: 1.5;
+        }
+
+        .log-console .lt { color: var(--text-muted); margin-right: 0.5rem; }
+        .log-console .info { color: var(--accent-cyan); }
+        .log-console .ok { color: var(--accent-green); }
+        .log-console .warn { color: var(--accent-yellow); }
+        .log-console .err { color: var(--accent-red); }
+
+        /* Cell editor */
+        .map-cell input, .timing-cell input {
+            width: 100%;
+            background: var(--bg-primary);
+            border: 1px solid var(--accent-cyan);
+            color: var(--text-primary);
+            font-family: 'Courier New', monospace;
+            font-size: inherit;
+            text-align: center;
+            border-radius: 3px;
+            outline: none;
+            padding: 1px;
+        }
+
+        .map-legend {
+            display: flex;
+            gap: 1rem;
+            margin-top: 0.6rem;
+            font-size: 0.65rem;
+            color: var(--text-secondary);
+        }
+
+        .map-legend span { display: inline-flex; align-items: center; gap: 0.3rem; }
+        .swatch { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+
+        .dirty-badge {
+            display: inline-block;
+            font-size: 0.6rem;
+            padding: 0.15rem 0.5rem;
+            border-radius: 10px;
+            background: var(--accent-yellow);
+            color: var(--bg-primary);
+            font-weight: 700;
+            margin-left: 0.5rem;
+            vertical-align: middle;
+        }
+
+        .footer-note {
+            text-align: center;
+            padding: 1rem;
+            color: var(--text-muted);
+            font-size: 0.7rem;
+        }
+
+        .progress-wrap {
+            height: 10px;
+            background: var(--bg-tertiary);
+            border-radius: 5px;
+            overflow: hidden;
+            margin-top: 0.6rem;
+            display: none;
+        }
+
+        .progress-fill {
+            height: 100%;
+            width: 0%;
+            background: linear-gradient(90deg, var(--accent-cyan), var(--accent-purple));
+            transition: width 0.2s;
+        }
+    </style>
+</head>
+<body>
+    <header class="header">
+        <div class="logo-section">
+            <div class="logo">👻</div>
+            <div class="brand">
+                <h1>GhostTech FanTom</h1>
+                <span>ECU Tuner Pro</span>
+            </div>
+        </div>
+        <div class="header-controls">
+            <div class="connection-status">
+                <div class="status-dot" id="connDot" style="background:var(--accent-red);box-shadow:none;"></div>
+                <span id="connText">Disconnected</span>
+            </div>
+            <button class="header-btn" id="simBtn"><i class="fas fa-flask"></i> Sim Data</button>
+            <button class="header-btn primary" id="connectBtn"><i class="fas fa-plug"></i> Connect</button>
+        </div>
+    </header>
+
+    <div class="main-container">
+        <!-- LEFT SIDEBAR -->
+        <div class="sidebar">
+            <div class="panel">
+                <div class="panel-header">
+                    <div class="panel-title"><i class="fas fa-microchip"></i> ECU Session</div>
+                </div>
+                <div class="panel-content">
+                    <div class="toolbar" style="margin-bottom:0.75rem;">
+                        <button class="btn dump" id="dumpBtn"><i class="fas fa-download"></i> Dump ROM</button>
+                        <button class="btn flash" id="flashBtn" disabled><i class="fas fa-upload"></i> Flash ROM</button>
+                    </div>
+                    <div class="progress-wrap" id="progressWrap"><div class="progress-fill" id="progressFill"></div></div>
+                    <div class="sensor-list" style="margin-top:0.75rem;">
+                        <div class="sensor-item"><span class="label">ECU ID</span><span class="value" id="ecuId">--</span></div>
+                        <div class="sensor-item"><span class="label">ROM Size</span><span class="value" id="romSize">--</span></div>
+                        <div class="sensor-item"><span class="label">Definition</span><span class="value" id="defName" style="font-size:0.7rem;">--</span></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="panel">
+                <div class="panel-header">
+                    <div class="panel-title"><i class="fas fa-gauge-high"></i> Live Sensors</div>
+                </div>
+                <div class="panel-content">
+                    <div class="sensor-list" id="sensorList"></div>
+                </div>
+            </div>
+
+            <div class="panel">
+                <div class="panel-header">
+                    <div class="panel-title"><i class="fas fa-terminal"></i> Console</div>
+                </div>
+                <div class="panel-content">
+                    <div class="log-console" id="logConsole"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- CENTER -->
+        <div class="center-section">
+            <div class="main-gauges">
+                <div class="main-gauge-card rpm">
+                    <div class="main-gauge-icon"><i class="fas fa-tachometer-alt"></i></div>
+                    <div class="main-gauge-value" id="gRpm">0</div>
+                    <div class="main-gauge-unit">rpm</div>
+                    <div class="main-gauge-label">Engine Speed</div>
+                    <div class="main-gauge-minmax"><span>0</span><span>8000</span></div>
+                </div>
+                <div class="main-gauge-card boost">
+                    <div class="main-gauge-icon"><i class="fas fa-wind"></i></div>
+                    <div class="main-gauge-value" id="gBoost">0.0</div>
+                    <div class="main-gauge-unit">psi</div>
+                    <div class="main-gauge-label">Boost</div>
+                    <div class="main-gauge-minmax"><span>-14</span><span>30</span></div>
+                </div>
+                <div class="main-gauge-card temp">
+                    <div class="main-gauge-icon"><i class="fas fa-temperature-half"></i></div>
+                    <div class="main-gauge-value" id="gTemp">--</div>
+                    <div class="main-gauge-unit">°F</div>
+                    <div class="main-gauge-label">Coolant</div>
+                    <div class="main-gauge-minmax"><span>120</span><span>260</span></div>
+                </div>
+                <div class="main-gauge-card fuel">
+                    <div class="main-gauge-icon"><i class="fas fa-gas-pump"></i></div>
+                    <div class="main-gauge-value" id="gAfr">--</div>
+                    <div class="main-gauge-unit">afr</div>
+                    <div class="main-gauge-label">Air / Fuel</div>
+                    <div class="main-gauge-minmax"><span>10</span><span>20</span></div>
+                </div>
+            </div>
+
+            <div class="maps-section">
+                <div class="panel">
+                    <div class="panel-header">
+                        <div class="panel-title"><i class="fas fa-table-cells"></i> Fuel Map <span id="fuelDirty"></span></div>
+                        <span style="font-size:0.65rem;color:var(--text-muted);">click a cell to edit</span>
+                    </div>
+                    <div class="panel-content">
+                        <div class="map-grid" id="fuelMap"></div>
+                        <div class="map-legend">
+                            <span><span class="swatch" style="background:var(--accent-green);"></span> lean</span>
+                            <span><span class="swatch" style="background:var(--accent-yellow);"></span> mid</span>
+                            <span><span class="swatch" style="background:var(--accent-red);"></span> rich</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="panel">
+                    <div class="panel-header">
+                        <div class="panel-title"><i class="fas fa-bolt"></i> Timing Map <span id="timingDirty"></span></div>
+                        <span style="font-size:0.65rem;color:var(--text-muted);">click a cell to edit</span>
+                    </div>
+                    <div class="panel-content">
+                        <div class="timing-grid" id="timingMap"></div>
+                        <div class="map-legend">
+                            <span><span class="swatch" style="background:var(--accent-green);"></span> advanced</span>
+                            <span><span class="swatch" style="background:var(--accent-red);"></span> retarded</span>
+                            <span><span class="swatch" style="background:var(--bg-tertiary);border:1px solid var(--border-color);"></span> stock</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="panel">
+                <div class="panel-header">
+                    <div class="panel-title"><i class="fas fa-chart-line"></i> Fuel Surface</div>
+                </div>
+                <div class="panel-content">
+                    <div class="surface-map" id="surfaceMap"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- RIGHT SIDEBAR -->
+        <div class="right-sidebar">
+            <div class="panel">
+                <div class="panel-header">
+                    <div class="panel-title"><i class="fas fa-sliders"></i> Channels</div>
+                </div>
+                <div class="panel-content" id="barGauges"></div>
+            </div>
+
+            <div class="panel">
+                <div class="panel-header">
+                    <div class="panel-title"><i class="fas fa-list"></i> Map Index</div>
+                </div>
+                <div class="panel-content" style="padding:0;">
+                    <table class="data-table">
+                        <thead><tr><th>Table</th><th>Addr</th><th>Size</th></tr></thead>
+                        <tbody id="mapIndex"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="panel">
+                <div class="panel-header">
+                    <div class="panel-title"><i class="fas fa-heart-pulse"></i> Status</div>
+                </div>
+                <div class="panel-content">
+                    <div class="status-grid" id="statusGrid"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="footer-note">GhostTech FanTom · sim mode — connect a bridge (Tauri <span style="font-family:'Courier New',monospace;">invoke</span>) to drive live data</div>
+
+<script>
+'use strict';
+/* ============================================================
+   GhostTech FanTom — Dyno Dashboard
+   Data flows through the FanTom bridge. In a Tauri shell the
+   bridge calls window.__TAURI__.invoke(); in a plain browser
+   it falls back to the built-in simulator.
+   ============================================================ */
+
+const logConsole = document.getElementById('logConsole');
+function log(msg, cls = 'info') {
+    const t = new Date().toLocaleTimeString('en-US', { hour12: false });
+    const div = document.createElement('div');
+    div.innerHTML = `<span class="lt">[${t}]</span><span class="${cls}">${msg}</span>`;
+    logConsole.appendChild(div);
+    logConsole.scrollTop = logConsole.scrollHeight;
+}
+
+/* ---------------- Bridge ---------------- */
+const Bridge = {
+    tauri: !!(window.__TAURI__ && window.__TAURI__.invoke),
+    async invoke(cmd, args = {}) {
+        if (this.tauri) return window.__TAURI__.invoke(cmd, args);
+        throw new Error('no native bridge (sim mode)');
+    },
+    get mode() { return this.tauri ? 'native' : 'sim'; }
+};
+
+/* ---------------- State ---------------- */
+const S = {
+    connected: false,
+    sim: true,                 // sim data generator on/off
+    romLoaded: false,
+    dirty: false,
+    rpm: 0, boost: -8, temp: 185, afr: 14.7,
+    maf: 0, timing: 15, voltage: 13.8, knock: 0,
+    fuelMap: [],               // 8x8
+    timingMap: [],             // 6x12
+};
+
+const RPM_AXIS = [800, 1200, 1600, 2200, 2800, 3600, 4400, 5600];
+const LOAD_AXIS = ['10','20','30','45','60','75','90','100'];
+
+/* Seed plausible stock-ish maps */
+function seedMaps() {
+    S.fuelMap = [];
+    for (let r = 0; r < 8; r++) {
+        const row = [];
+        for (let c = 0; c < 8; c++) {
+            // richer with load & rpm — values ~ injector pulse ms * 100
+            row.push(Math.round(95 + r * 22 + c * 9 + Math.random() * 8));
+        }
+        S.fuelMap.push(row);
+    }
+    S.timingMap = [];
+    for (let r = 0; r < 6; r++) {
+        const row = [];
+        for (let c = 0; c < 12; c++) {
+            // timing falls off with load, rises then falls with rpm
+            row.push(Math.round(28 - r * 3.2 + Math.sin(c / 2.2) * 4 + Math.random() * 2));
+        }
+        S.timingMap.push(row);
+    }
+}
+
+function fuelClass(v) { return v < 160 ? 'low' : v < 260 ? 'medium' : 'high'; }
+function timingClass(v, stock) {
+    if (v === stock) return 'stock';
+    return v > stock ? 'advanced' : 'retarded';
+}
+
+/* ---------------- Render: maps ---------------- */
+const stockTiming = [];
+function renderFuelMap() {
+    const el = document.getElementById('fuelMap');
+    el.innerHTML = '';
+    el.appendChild(document.createElement('div')); // corner
+    LOAD_AXIS.forEach(h => {
+        const d = document.createElement('div');
+        d.className = 'map-grid-header'; d.textContent = h;
+        el.appendChild(d);
+    });
+    S.fuelMap.forEach((row, r) => {
+        const rh = document.createElement('div');
+        rh.className = 'map-grid-row-header'; rh.textContent = RPM_AXIS[r];
+        el.appendChild(rh);
+        row.forEach((v, c) => {
+            const cell = document.createElement('div');
+            cell.className = 'map-cell ' + fuelClass(v);
+            cell.textContent = v;
+            cell.dataset.r = r; cell.dataset.c = c;
+            cell.addEventListener('click', () => editCell(cell, 'fuel'));
+            el.appendChild(cell);
+        });
+    });
+    renderSurface();
+}
+
+function renderTimingMap() {
+    const el = document.getElementById('timingMap');
+    el.innerHTML = '';
+    S.timingMap.forEach((row, r) => {
+        row.forEach((v, c) => {
+            if (stockTiming[r] === undefined) stockTiming[r] = [];
+            if (stockTiming[r][c] === undefined) stockTiming[r][c] = v;
+            const cell = document.createElement('div');
+            cell.className = 'timing-cell ' + timingClass(v, stockTiming[r][c]);
+            cell.textContent = v + '°';
+            cell.dataset.r = r; cell.dataset.c = c;
+            cell.addEventListener('click', () => editCell(cell, 'timing'));
+            el.appendChild(cell);
+        });
+    });
+}
+
+function renderSurface() {
+    const el = document.getElementById('surfaceMap');
+    el.innerHTML = '';
+    // one bar per load column, averaged over rpm
+    for (let c = 0; c < 8; c++) {
+        let sum = 0;
+        for (let r = 0; r < 8; r++) sum += S.fuelMap[r][c];
+        const avg = sum / 8;
+        const h = Math.min(100, Math.max(8, (avg / 340) * 100));
+        const bar = document.createElement('div');
+        bar.className = 'surface-bar';
+        bar.style.height = h + '%';
+        bar.dataset.value = Math.round(avg);
+        el.appendChild(bar);
+    }
+}
+
+function markDirty() {
+    S.dirty = true;
+    document.getElementById('fuelDirty').innerHTML = '<span class="dirty-badge">MODIFIED</span>';
+    document.getElementById('timingDirty').innerHTML = '<span class="dirty-badge">MODIFIED</span>';
+    document.getElementById('flashBtn').disabled = !S.romLoaded;
+}
+
+function editCell(cell, kind) {
+    const r = +cell.dataset.r, c = +cell.dataset.c;
+    const cur = kind === 'fuel' ? S.fuelMap[r][c] : S.timingMap[r][c];
+    cell.innerHTML = '';
+    const inp = document.createElement('input');
+    inp.value = cur;
+    inp.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') commit();
+        if (e.key === 'Escape') renderAll();
+        e.stopPropagation();
+    });
+    inp.addEventListener('blur', commit);
+    function commit() {
+        const v = parseInt(inp.value, 10);
+        if (!isNaN(v)) {
+            if (kind === 'fuel') { S.fuelMap[r][c] = Math.max(0, Math.min(999, v)); }
+            else { S.timingMap[r][c] = Math.max(-20, Math.min(60, v)); }
+            markDirty();
+            log(`map edit: ${kind}[${r}][${c}] ${cur} → ${v}`, 'warn');
+        }
+        renderAll();
+    }
+    cell.appendChild(inp);
+    inp.focus(); inp.select();
+}
+
+/* ---------------- Render: gauges & sensors ---------------- */
+const SENSORS = [
+    ['MAF', 'maf', 'g/s', 1], ['Ign Timing', 'timing', '°', 1],
+    ['Battery', 'voltage', 'V', 1], ['Knock', 'knock', 'cnt', 0],
+    ['TPS', 'tps', '%', 0], ['IAT', 'iat', '°F', 0],
+];
+function renderSensors() {
+    const el = document.getElementById('sensorList');
+    el.innerHTML = '';
+    SENSORS.forEach(([label, key, unit]) => {
+        const d = document.createElement('div');
+        d.className = 'sensor-item';
+        d.innerHTML = `<span class="label">${label}</span><span><span class="value" id="s_${key}">--</span><span class="unit">${unit}</span></span>`;
+        el.appendChild(d);
+    });
+}
+
+const BARS = [
+    ['MAF', 'maf', 320, 'maf'], ['Ign Timing', 'timing', 45, 'timing'],
+    ['Fuel Trim', 'fuelTrim', 25, 'fuel'], ['Voltage', 'voltage', 16, 'voltage'],
+];
+function renderBars() {
+    const el = document.getElementById('barGauges');
+    el.innerHTML = '';
+    BARS.forEach(([label, key, max, cls]) => {
+        const d = document.createElement('div');
+        d.className = 'bar-gauge';
+        d.innerHTML = `
+            <div class="bar-gauge-header"><span class="bar-gauge-label">${label}</span><span class="bar-gauge-value" id="b_${key}">--</span></div>
+            <div class="bar-gauge-track"><div class="bar-gauge-fill ${cls}" id="bf_${key}" style="width:0%"></div></div>
+            <div class="bar-gauge-markers"><span>0</span><span>${max}</span></div>`;
+        el.appendChild(d);
+    });
+}
+
+const MAP_INDEX = [
+    ['High Fuel Map', '0x3D00', '16×16'], ['Low Fuel Map', '0x3E00', '16×16'],
+    ['High Timing Map', '0x4200', '16×16'], ['Low Timing Map', '0x4300', '16×16'],
+    ['TP Scale', '0x3A00', '16'], ['RPM Scale', '0x3A20', '16'],
+    ['VQ Map (MAF)', '0x3800', '16×16'], ['Rev Limit', '0x4A10', '1'],
+];
+function renderMapIndex() {
+    const el = document.getElementById('mapIndex');
+    el.innerHTML = MAP_INDEX.map(([n, a, s]) =>
+        `<tr><td class="highlight">${n}</td><td>${a}</td><td>${s}</td></tr>`).join('');
+}
+
+const STATUS = [['ECU', 'ok'], ['K-Line', 'ok'], ['Kernel', 'warn'], ['ROM', 'warn']];
+function renderStatus() {
+    const el = document.getElementById('statusGrid');
+    el.innerHTML = STATUS.map(([l, s]) =>
+        `<div class="status-item"><div class="dot ${s}"></div><div class="slabel">${l}</div></div>`).join('');
+}
+
+function updateGauges() {
+    document.getElementById('gRpm').textContent = Math.round(S.rpm);
+    document.getElementById('gBoost').textContent = S.boost.toFixed(1);
+    document.getElementById('gTemp').textContent = Math.round(S.temp);
+    document.getElementById('gAfr').textContent = S.afr.toFixed(1);
+    const set = (id, v, dec = 1) => { const e = document.getElementById(id); if (e) e.textContent = (+v).toFixed(dec); };
+    set('s_maf', S.maf); set('s_timing', S.timing); set('s_voltage', S.voltage);
+    set('s_knock', S.knock, 0); set('s_tps', S.tps, 0); set('s_iat', S.iat, 0);
+    const bar = (key, v, max) => {
+        const f = document.getElementById('bf_' + key), t = document.getElementById('b_' + key);
+        if (f) f.style.width = Math.min(100, (v / max) * 100) + '%';
+        if (t) t.textContent = (+v).toFixed(1);
+    };
+    bar('maf', S.maf, 320); bar('timing', S.timing, 45);
+    bar('fuelTrim', S.fuelTrim, 25); bar('voltage', S.voltage, 16);
+}
+
+/* ---------------- Simulator ---------------- */
+let simTimer = null;
+function simTick() {
+    // idle-ish wander with occasional "pull"
+    const pull = Math.random() < 0.06;
+    const target = pull ? 3200 + Math.random() * 2800 : 750 + Math.random() * 250;
+    S.rpm += (target - S.rpm) * 0.25;
+    S.boost = S.rpm > 2500 ? Math.min(18, (S.rpm - 2500) / 220) : -8 + Math.random() * 2;
+    S.temp = 185 + Math.sin(Date.now() / 60000) * 6 + Math.random();
+    S.afr = S.boost > 2 ? 11.8 + Math.random() * 0.8 : 14.2 + Math.random() * 1.1;
+    S.maf = Math.min(320, S.rpm / 22 + Math.random() * 8);
+    S.timing = Math.max(8, 32 - S.boost * 0.9 + Math.random() * 2);
+    S.voltage = 13.6 + Math.random() * 0.5;
+    S.knock = Math.random() < 0.02 ? 1 : 0;
+    S.tps = Math.min(100, S.rpm / 65);
+    S.iat = 95 + Math.random() * 12;
+    S.fuelTrim = (Math.random() - 0.5) * 8;
+    updateGauges();
+}
+function setSim(on) {
+    S.sim = on;
+    document.getElementById('simBtn').innerHTML = on
+        ? '<i class="fas fa-flask"></i> Sim: ON' : '<i class="fas fa-flask"></i> Sim: OFF';
+    if (on && !simTimer) simTimer = setInterval(simTick, 400);
+    if (!on && simTimer) { clearInterval(simTimer); simTimer = null; }
+}
+
+/* ---------------- Actions ---------------- */
+function setConnected(on) {
+    S.connected = on;
+    document.getElementById('connDot').style.background = on ? 'var(--accent-green)' : 'var(--accent-red)';
+    document.getElementById('connDot').style.boxShadow = on ? 'var(--glow-green)' : 'none';
+    document.getElementById('connText').textContent = on ? `Connected (${Bridge.mode})` : 'Disconnected';
+    document.getElementById('connectBtn').classList.toggle('live', on);
+    document.getElementById('connectBtn').innerHTML = on ? '<i class="fas fa-plug"></i> Disconnect' : '<i class="fas fa-plug"></i> Connect';
+}
+
+async function doDump() {
+    const btn = document.getElementById('dumpBtn');
+    btn.disabled = true;
+    showProgress(true);
+    log('dump: requesting ROM via nisprog…');
+    try {
+        if (Bridge.tauri) {
+            const res = await Bridge.invoke('dump_rom', {});
+            log('dump: ' + JSON.stringify(res), 'ok');
+        } else {
+            // simulated dump with progress
+            for (let p = 0; p <= 100; p += 5) { setProgress(p); await sleep(90); }
+            S.romLoaded = true;
+            document.getElementById('ecuId').textContent = '8U92A';
+            document.getElementById('romSize').textContent = '512 KB';
+            document.getElementById('defName').textContent = 'SH7055';
+            log('dump: 524288 bytes in 97.2s (5.4 kB/s, npkern)', 'ok');
+            log('dump: ECUID 8U92A detected, definition SH7055 applied', 'ok');
+        }
+    } catch (e) {
+        log('dump failed: ' + e.message, 'err');
+    }
+    showProgress(false);
+    btn.disabled = false;
+}
+
+async function doFlash() {
+    if (!S.romLoaded) { log('flash: no ROM loaded — dump first', 'warn'); return; }
+    if (!S.dirty) { log('flash: no changes to write', 'warn'); return; }
+    if (!confirm('Flash modified ROM to ECU? Double-check your maps.')) return;
+    const btn = document.getElementById('flashBtn');
+    btn.disabled = true;
+    showProgress(true);
+    log('flash: erasing + writing blocks…', 'warn');
+    try {
+        if (Bridge.tauri) {
+            const res = await Bridge.invoke('flash_rom', { maps: { fuel: S.fuelMap, timing: S.timingMap } });
+            log('flash: ' + JSON.stringify(res), 'ok');
+        } else {
+            for (let p = 0; p <= 100; p += 4) { setProgress(p); await sleep(110); }
+            log('flash: 8 blocks written, checksum OK', 'ok');
+            log('flash: ECU reset — kernel removed, new ROM active', 'ok');
+        }
+        S.dirty = false;
+        document.getElementById('fuelDirty').innerHTML = '';
+        document.getElementById('timingDirty').innerHTML = '';
+    } catch (e) {
+        log('flash failed: ' + e.message, 'err');
+    }
+    showProgress(false);
+    btn.disabled = false;
+}
+
+function showProgress(on) {
+    document.getElementById('progressWrap').style.display = on ? 'block' : 'none';
+    if (on) setProgress(0);
+}
+function setProgress(p) { document.getElementById('progressFill').style.width = p + '%'; }
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+function renderAll() { renderFuelMap(); renderTimingMap(); updateGauges(); }
+
+/* ---------------- Boot ---------------- */
+seedMaps();
+renderSensors();
+renderBars();
+renderMapIndex();
+renderStatus();
+renderAll();
+setSim(true);
+log('FanTom dashboard ready — sim mode', 'ok');
+log('bridge: ' + (Bridge.tauri ? 'native (Tauri invoke available)' : 'no native bridge, using simulator'), 'warn');
+
+document.getElementById('connectBtn').addEventListener('click', () => {
+    if (S.connected) { setConnected(false); log('disconnected'); }
+    else {
+        setConnected(true);
+        log('K-Line link established (freediag backend)', 'ok');
+        log('npkern uploaded to ECU RAM — fast ops enabled', 'ok');
+    }
+});
+document.getElementById('simBtn').addEventListener('click', () => setSim(!S.sim));
+document.getElementById('dumpBtn').addEventListener('click', doDump);
+document.getElementById('flashBtn').addEventListener('click', doFlash);
+</script>
+</body>
+</html>
+
