@@ -67,7 +67,15 @@ fn resolve_sidecar(name: &str) -> PathBuf {
 /// Always terminates the session with `exit`. Blocks until nisprog quits —
 /// dumps/flashes can take minutes; do NOT kill it mid-flash.
 fn run_script(commands: &[String]) -> Result<String, String> {
-    let mut child = Command::new(nisprog_path())
+    let exe = nisprog_path();
+    let mut cmd = Command::new(&exe);
+    // Run with cwd = nisprog's own folder so it finds its nisprog.ini
+    // (interface/port/protocol setup) next to the exe. All file args we
+    // pass are absolute, so this doesn't affect them.
+    if let Some(dir) = exe.parent().filter(|p| !p.as_os_str().is_empty()) {
+        cmd.current_dir(dir);
+    }
+    let mut child = cmd
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

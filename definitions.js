@@ -165,6 +165,20 @@ const Defs = (() => {
         }
         return null;
     }
+    // RomTable.cs properties may arrive as XML attributes OR child elements
+    // (plain C# XmlSerializer maps properties to child elements by name).
+    // Try attribute spellings first, then a case-insensitive child element.
+    function propVal(el, names) {
+        for (const n of names) {
+            const v = el.getAttribute(n);
+            if (v != null && v !== '') return v;
+        }
+        for (const n of names) {
+            const c = childEls(el, n)[0];
+            if (c) { const t = textOf(c); if (t) return t; }
+        }
+        return null;
+    }
 
     // scalingbase registry: name -> {units, expression, to_byte, format}
     const scalings = new Map();
@@ -214,15 +228,15 @@ const Defs = (() => {
 
     function parseAxisEl(a) {
         // RomTableAxis carries its own StorageAddress + Endian (per C# model);
-        // attribute names vary by definition file version — try several.
-        const addrAttr = a.getAttribute('storageaddress') || a.getAttribute('address') || a.getAttribute('storageAddress');
+        // may be an attribute or a child element — try several spellings.
+        const addrAttr = propVal(a, ['storageaddress', 'storageAddress', 'address']);
         return {
             type: a.getAttribute('type') || '',
             name: a.getAttribute('name') || '',
             size: parseInt(a.getAttribute('sizex') || '0', 10),
             storagetype: a.getAttribute('storagetype') || null,
-            endian: a.getAttribute('endian') || null,
-            storageAddress: addrAttr != null && addrAttr !== '' ? hex(addrAttr) : null,
+            endian: propVal(a, ['endian']) || null,
+            storageAddress: addrAttr != null ? hex(addrAttr) : null,
             values: childEls(a, 'data').map(d => parseFloat(textOf(d))),
             address: null, // dynamic (non-static) axes: address TBD
         };
@@ -230,9 +244,8 @@ const Defs = (() => {
     function parseTableEl(t) {
         const scalingEl = childEls(t, 'scaling')[0];
         const descEl = childEls(t, 'description')[0];
-        // RomTable likely carries StorageAddress too (axis class does);
-        // try several attribute spellings — stays null if absent.
-        const addrAttr = t.getAttribute('storageaddress') || t.getAttribute('address') || t.getAttribute('storageAddress');
+        // RomTable carries StorageAddress too (attr or child element).
+        const addrAttr = propVal(t, ['storageaddress', 'storageAddress', 'address']);
         return {
             kind: 'table',
             type: t.getAttribute('type') || '',           // 2D | 3D
@@ -248,7 +261,8 @@ const Defs = (() => {
                 .map(parseAxisEl),
             description: descEl ? textOf(descEl) : '',
             symbol: descEl ? extractSymbol(descEl) : null,
-            storageAddress: addrAttr != null && addrAttr !== '' ? hex(addrAttr) : null,
+            storageAddress: addrAttr != null ? hex(addrAttr) : null,
+            endian: propVal(t, ['endian']) || null,
             address: null, // = storageAddress once confirmed; ROM address resolution TBD
         };
     }
@@ -282,7 +296,7 @@ const Defs = (() => {
         const addr = tableAddress(table);
         if (addr == null) return null; // no address yet
         const b = romBytes instanceof Uint8Array ? romBytes : new Uint8Array(romBytes);
-        const be = (endian || 'Big').toLowerCase().startsWith('big');
+        const be = (table.endian || endian || 'Big').toLowerCase().startsWith('big');
         const sz = storageSize(table.storagetype);
         const n = table.sizex * (table.sizey || 1);
         const vals = [];
@@ -301,7 +315,7 @@ const Defs = (() => {
         const addr = tableAddress(table);
         if (addr == null) return false;
         const b = romBytes instanceof Uint8Array ? romBytes : new Uint8Array(romBytes);
-        const be = (endian || 'Big').toLowerCase().startsWith('big');
+        const be = (table.endian || endian || 'Big').toLowerCase().startsWith('big');
         const sz = storageSize(table.storagetype);
         rawVals.forEach((v, i) => {
             const a = addr + i * sz;
