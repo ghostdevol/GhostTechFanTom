@@ -276,6 +276,115 @@ fn read_file_bin(path: String) -> Result<Vec<u8>, String> {
     std::fs::read(&path).map_err(|e| format!("failed to read {path}: {e}"))
 }
 
+/// Parse a hex address string ("1A2B3C" or "0x1A2B3C") to a file offset.
+/// Mirrors NisROM's Table3DView: `Convert.ToUInt32(StorageAddress, 16)` —
+/// the XML storageaddress is a direct byte offset into the ROM dump.
+fn parse_hex_addr(s: &str) -> Result<u64, String> {
+    let h = s.trim().trim_start_matches("0x").trim_start_matches("0X");
+    u64::from_str_radix(h, 16).map_err(|e| format!("bad hex address '{s}': {e}"))
+}
+
+/// Read a calibration table's raw values straight from a ROM file.
+///
+/// - `address`: hex string from the XML `storageaddress` attribute — used
+///   as a direct file offset (no translation), same as NisROM.
+/// - `storagetype`: "uint8" or "uint16".
+/// - SH7055 is big-endian; byte pairs are swapped on read to match NisROM's
+///   `new byte[2] { RomBytes[i+1], RomBytes[i] }`.
+/// - Returns row-major values: for a 2D table, index = y * size_x + x.
+#[tauri::command]
+fn read_table(
+    rom_path: String,
+    address: String,
+    storagetype: String,
+    size_x: u32,
+    size_y: u32,
+    endian: Option<String>,
+) -> Result<Vec<u32>, String> {
+    let addr = parse_hex_addr(&address)?;
+    let big = endian.as_deref().unwrap_or("big").eq_ignore_ascii_case("big");
+    let elem = match storagetype.to_lowercase().as_str() {
+        "uint16" => 2u64,
+        _ => 1u64, // uint8 default
+    };
+    let nx = size_x.max(1) as u64;
+    let ny = size_y.max(1) as u64;
+    let count = nx * ny;
+    let need = addr + count * elem;
+
+    let bytes =
+        std::fs::read(&rom_path).map_err(|e| format!("failed to read {rom_path}: {e}"))?;
+    if need > bytes.len() as u64 {
+        return Err(format!(
+            "table at 0x{addr:X} ({} bytes) runs past end of ROM ({} bytes)",
+            count * elem,
+            bytes.len()
+        ));
+    }
+
+    let mut out = Vec::with_capacity(count as usize);
+    for i in 0..count {
+        let a = (addr + i * elem) as usize;
+        let v = if elem == 1 {
+            bytes[a] as u32
+        } else if big {
+            ((bytes[a] as u32) << 8) | bytes[a + 1] as u32
+        } else {
+            (bytes[a] as u32) | ((bytes[a + 1] as u32) << 8)
+        };
+        out.push(v);
+    }
+    Ok(out)
+}
+
+/// Write raw calibration values back into a ROM file at the table's address.
+/// Inverse of `read_table` — same offset/endianness rules. The caller is
+/// responsible for checksums; use `flash_rom` to write to the ECU.
+#[tauri::command]
+fn write_table(
+    rom_path: String,
+    address: String,
+    storagetype: String,
+    endian: Option<String>,
+    values: Vec<u32>,
+) -> Result<String, String> {
+    let addr = parse_hex_addr(&address)?;
+    let big = endian.as_deref().unwrap_or("big").eq_ignore_ascii_case("big");
+    let elem = match storagetype.to_lowercase().as_str() {
+        "uint16" => 2u64,
+        _ => 1u64,
+    };
+    let need = addr + values.len() as u64 * elem;
+
+    let mut bytes =
+        std::fs::read(&rom_path).map_err(|e| format!("failed to read {rom_path}: {e}"))?;
+    if need > bytes.len() as u64 {
+        return Err(format!(
+            "write at 0x{addr:X} ({} bytes) runs past end of ROM ({} bytes)",
+            values.len() as u64 * elem,
+            bytes.len()
+        ));
+    }
+
+    for (i, &v) in values.iter().enumerate() {
+        let a = (addr + i as u64 * elem) as usize;
+        if elem == 1 {
+            bytes[a] = (v & 0xFF) as u8;
+        } else if big {
+            bytes[a] = ((v >> 8) & 0xFF) as u8;
+            bytes[a + 1] = (v & 0xFF) as u8;
+        } else {
+            bytes[a] = (v & 0xFF) as u8;
+            bytes[a + 1] = ((v >> 8) & 0xFF) as u8;
+        }
+    }
+    std::fs::write(&rom_path, &bytes).map_err(|e| format!("failed to write {rom_path}: {e}"))?;
+    Ok(format!(
+        "wrote {} value(s) at 0x{addr:X} in {rom_path}",
+        values.len()
+    ))
+}
+
 /// Escape hatch: run arbitrary nisprog shell commands (e.g. `watch <addr>`,
 /// `diag ...`). Powers the dashboard console. Use with care.
 #[tauri::command]
@@ -291,7 +400,9 @@ fn main() {
             flash_rom,
             verify_rom,
             nisprog_raw,
-            read_file_bin
+            read_file_bin,
+            read_table,
+            write_table
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
