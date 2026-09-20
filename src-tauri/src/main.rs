@@ -1,0 +1,298 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+//! GhostTech FanTom — Tauri backend.
+//!
+//! nisprog.exe is an INTERACTIVE shell (nisprog> prompt), not a one-shot CLI.
+//! This backend drives it by spawning it with piped stdin, feeding it a
+//! scripted command sequence, then collecting stdout. Sequences follow the
+//! suite's bundled USING.txt and were validated against the strings of the
+//! suite's own nisprog.exe:
+//!
+//!   dump : npconn -> setdev <N> -> npconf p3 0 -> runkernel <kern>
+//!            -> dumpmem <file> <start> <len> -> stopkernel -> npdisc
+//!   flash: npconn -> setdev <N> -> npconf p3 0 -> runkernel <kern>
+//!            -> flrom <romfile> -> (answer p/y prompts) -> stopkernel -> npdisc
+//!   verif: npconn -> setdev <N> -> runkernel <kern> -> flverif <file>
+//!            -> stopkernel -> npdisc
+//!
+//! Notes:
+//! - The suite's binary takes `setdev <device_no>` (0=7051, 1=7055, 2=7058),
+//!   NOT the name form from newer nisprog docs.
+//! - Key selection is automatic: npconn reads the ECUID and picks the best
+//!   keyset itself. There is no `gk` command in the suite's binary.
+//! - The ini (interface/port/protocol) is auto-loaded; nisprog is spawned
+//!   with cwd = its own folder so it finds it.
+
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+
+/// Locate nisprog.exe:
+///   1. NISPROG_PATH env var (dev override)
+///   2. sidecar next to the app binary (ship nisprog.exe beside FanTom.exe)
+///   3. PATH fallback
+fn nisprog_path() -> PathBuf {
+    if let Ok(p) = std::env::var("NISPROG_PATH") {
+        return PathBuf::from(p);
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let sidecar = dir.join("nisprog.exe");
+            if sidecar.exists() {
+                return sidecar;
+            }
+        }
+    }
+    PathBuf::from("nisprog.exe")
+}
+
+/// Kernel files are per ECU family: npk_7055_18.bin, npk_7058.bin,
+/// npk_SH7051, npk_SH7055_18, ... (see the Binaries folder). Given an ECU
+/// label, build the matching kernel filename.
+fn kernel_for_ecu(ecu: &str) -> String {
+    format!("npk_{}", ecu.trim().to_uppercase())
+}
+
+/// setdev device numbers for the suite's nisprog build — verified via
+/// strings on the bundled exe (`setdev <device_no>`):
+/// 0 = 7051 (256KB), 1 = 7055 (512KB), 2 = 7058 (1024KB).
+fn setdev_num_for_ecu(ecu: &str) -> &'static str {
+    let e = ecu.to_uppercase();
+    if e.contains("7058") {
+        "2"
+    } else if e.contains("7051") {
+        "0"
+    } else {
+        "1" // 7055 default
+    }
+}
+
+/// Resolve the kernel path: explicit path wins, otherwise try
+/// `<base>.bin` then `<base>` next to nisprog.exe (Binaries ships .bin).
+fn resolve_kernel(ecu: &str, explicit: Option<String>) -> PathBuf {
+    if let Some(k) = explicit {
+        return PathBuf::from(k);
+    }
+    let base = kernel_for_ecu(ecu);
+    let cands = [format!("{base}.bin"), base];
+    for c in &cands {
+        let p = resolve_sidecar(c);
+        if p.exists() {
+            return p;
+        }
+    }
+    resolve_sidecar(&cands[0])
+}
+
+/// Resolve a filename against the folder nisprog.exe lives in, so
+/// `runkernel` gets an absolute path regardless of the app's working dir.
+/// Absolute paths pass through untouched.
+fn resolve_sidecar(name: &str) -> PathBuf {
+    let p = PathBuf::from(name);
+    if p.is_absolute() {
+        return p;
+    }
+    let np = nisprog_path();
+    if let Some(dir) = np.parent() {
+        let candidate = dir.join(&p);
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+    p
+}
+/// Always terminates the session with `exit`. Blocks until nisprog quits —
+/// dumps/flashes can take minutes; do NOT kill it mid-flash.
+/// Feed a command script to nisprog's interactive shell and collect output.
+/// Always terminates the session with `exit`. Blocks until nisprog quits —
+/// dumps/flashes can take minutes; do NOT kill it mid-flash.
+fn run_script(commands: &[String]) -> Result<String, String> {
+    let exe = nisprog_path();
+    let mut cmd = Command::new(&exe);
+    // Run with cwd = nisprog's own folder so it finds its nisprog.ini
+    // (interface/port/protocol setup) next to the exe. All file args we
+    // pass are absolute, so this doesn't affect them.
+    if let Some(dir) = exe.parent().filter(|p| !p.as_os_str().is_empty()) {
+        cmd.current_dir(dir);
+    }
+    let mut child = cmd
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("failed to launch nisprog: {e}"))?;
+
+    let script = commands.join("\n") + "\nexit\n";
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(script.as_bytes())
+            .map_err(|e| format!("failed to write to nisprog stdin: {e}"))?;
+        // stdin dropped here -> EOF after the script
+    }
+
+    let out = child
+        .wait_with_output()
+        .map_err(|e| format!("failed waiting on nisprog: {e}"))?;
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    if out.status.success() {
+        Ok(stdout)
+    } else if stderr.is_empty() {
+        Err(format!(
+            "nisprog exited with status {}\n--- stdout ---\n{stdout}",
+            out.status
+        ))
+    } else {
+        Err(format!(
+            "nisprog exited with status {}\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
+            out.status
+        ))
+    }
+}
+
+/// Copy a file into a space-free temp staging dir and return the staged
+/// path. nisprog's `runkernel` does NOT accept paths containing spaces
+/// (per the author's USING.txt), and Daniel's "NisROM Tuning Suite"
+/// folder has spaces — so the kernel must be staged before use.
+fn stage_nospace(src: &Path, tag: &str) -> Result<PathBuf, String> {
+    let name = src
+        .file_name()
+        .ok_or_else(|| "staging: bad file name".to_string())?;
+    let mut dir = std::env::temp_dir();
+    dir.push(format!("fantom_{tag}"));
+    std::fs::create_dir_all(&dir).map_err(|e| format!("staging dir failed: {e}"))?;
+    dir.push(name);
+    std::fs::copy(src, &dir).map_err(|e| format!("staging copy failed: {e}"))?;
+    Ok(dir)
+}
+
+/// Dump the ECU ROM to a .bin file.
+/// `dumpmem <file> <start> <len>` — arg order confirmed via USING.txt.
+/// Length 0 = whole ROM (size inferred from setdev).
+#[tauri::command]
+fn dump_rom(
+    out_file: Option<String>,
+    start: Option<String>,
+    length: Option<String>,
+    ecu: Option<String>,
+    kernel: Option<String>,
+) -> Result<String, String> {
+    let start = start.unwrap_or_else(|| "0".to_string());
+    let length = length.unwrap_or_else(|| "0".to_string()); // 0 = full ROM
+    let ecu = ecu.unwrap_or_else(|| "SH7055_18".to_string());
+    let devnum = setdev_num_for_ecu(&ecu);
+    let kernel = resolve_kernel(&ecu, kernel);
+    let kernel = stage_nospace(&kernel, "kernels")?;
+    let kernel = kernel.to_string_lossy().to_string();
+    // default dump target: space-free temp dir (dumpmem may share the
+    // runkernel path restriction); absolutized and reported back so the
+    // frontend can load it with read_file_bin.
+    let abs_out: PathBuf = match out_file {
+        Some(f) => std::env::current_dir()
+            .map(|d| d.join(&f))
+            .unwrap_or_else(|_| PathBuf::from(&f)),
+        None => std::env::temp_dir().join("fantom_dump.bin"),
+    };
+    let abs_out_s = abs_out.to_string_lossy().to_string();
+    let stdout = run_script(&[
+        "npconn".to_string(),
+        format!("setdev {devnum}"),
+        "npconf p3 0".to_string(),
+        format!("runkernel {kernel}"),
+        format!("dumpmem {abs_out_s} {start} {length}"),
+        "stopkernel".to_string(),
+        "npdisc".to_string(),
+    ])?;
+    Ok(format!("DUMP_OK path={abs_out_s}\n{stdout}"))
+}
+
+/// Flash a (possibly edited) ROM .bin back to the ECU.
+/// `flrom <file>` offers interactive reflash choices (it can selectively
+/// reflash only modified blocks) and prompts — answer "p" for a practice
+/// dry-run or "y" for real. It may ask MORE THAN ONE question, so `confirm`
+/// can hold several newline-separated answers. DEFAULT IS "p" (dry run):
+/// a dry run normally reports verification errors since it writes nothing.
+/// DO NOT pass "y" unless you are on a bench/spare ECU with a charger
+/// connected and a verified backup. Not live-safe.
+#[tauri::command]
+fn flash_rom(
+    rom_file: Option<String>,
+    ecu: Option<String>,
+    kernel: Option<String>,
+    confirm: Option<String>,
+) -> Result<String, String> {
+    let rom_file = rom_file.unwrap_or_else(|| "dump.bin".to_string());
+    let ecu = ecu.unwrap_or_else(|| "SH7055_18".to_string());
+    let devnum = setdev_num_for_ecu(&ecu);
+    let kernel = resolve_kernel(&ecu, kernel);
+    let kernel = stage_nospace(&kernel, "kernels")?;
+    let kernel = kernel.to_string_lossy().to_string();
+    let rom_file = stage_nospace(Path::new(&rom_file), "roms")?;
+    let rom_file = rom_file.to_string_lossy().to_string();
+    let confirm = confirm.unwrap_or_else(|| "p".to_string()); // practice/dry-run
+    let mut script = vec![
+        "npconn".to_string(),
+        format!("setdev {devnum}"),
+        "npconf p3 0".to_string(),
+        format!("runkernel {kernel}"),
+        format!("flrom {rom_file}"),
+    ];
+    script.extend(confirm.split('\n').map(|s| s.to_string()));
+    script.push("stopkernel".to_string());
+    script.push("npdisc".to_string());
+    run_script(&script)
+}
+
+/// Compare a ROM file against the ECU's flash contents (read-only).
+/// `flverif <file>` — "Compare <file> against ROM". Modifies nothing,
+/// useful after a dump (sanity check) or after a flash (verify the write).
+#[tauri::command]
+fn verify_rom(
+    rom_file: String,
+    ecu: Option<String>,
+    kernel: Option<String>,
+) -> Result<String, String> {
+    let ecu = ecu.unwrap_or_else(|| "SH7055_18".to_string());
+    let devnum = setdev_num_for_ecu(&ecu);
+    let kernel = resolve_kernel(&ecu, kernel);
+    let kernel = stage_nospace(&kernel, "kernels")?;
+    let kernel = kernel.to_string_lossy().to_string();
+    let rom_file = stage_nospace(Path::new(&rom_file), "roms")?;
+    let rom_file = rom_file.to_string_lossy().to_string();
+    run_script(&[
+        "npconn".to_string(),
+        format!("setdev {devnum}"),
+        "npconf p3 0".to_string(),
+        format!("runkernel {kernel}"),
+        format!("flverif {rom_file}"),
+        "stopkernel".to_string(),
+        "npdisc".to_string(),
+    ])
+}
+
+/// Read a binary file (e.g. a dumped ROM) into the frontend as bytes.
+#[tauri::command]
+fn read_file_bin(path: String) -> Result<Vec<u8>, String> {
+    std::fs::read(&path).map_err(|e| format!("failed to read {path}: {e}"))
+}
+
+/// Escape hatch: run arbitrary nisprog shell commands (e.g. `watch <addr>`,
+/// `diag ...`). Powers the dashboard console. Use with care.
+#[tauri::command]
+fn nisprog_raw(script: String) -> Result<String, String> {
+    let commands: Vec<String> = script.lines().map(|l| l.to_string()).collect();
+    run_script(&commands)
+}
+
+fn main() {
+    tauri::Builder::default()
+        .invoke_handler(tauri::generate_handler![
+            dump_rom,
+            flash_rom,
+            verify_rom,
+            nisprog_raw,
+            read_file_bin
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}
