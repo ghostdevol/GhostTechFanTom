@@ -1087,12 +1087,12 @@ function log(msg, cls = 'info') {
 
 /* ---------------- Bridge ---------------- */
 const Bridge = {
-    tauri: !!(window.__TAURI__ && window.__TAURI__.invoke),
-    async invoke(cmd, args = {}) {
-        if (this.tauri) return window.__TAURI__.invoke(cmd, args);
-        throw new Error('no native bridge (sim mode)');
-    },
-    get mode() { return this.tauri ? 'native' : 'sim'; }
+tauri: !!(window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke),
+async invoke(cmd, args = {}) {
+if (this.tauri) return window.__TAURI__.core.invoke(cmd, args);
+throw new Error('no native bridge (sim mode)');
+},
+get mode() { return this.tauri ? 'native' : 'sim'; }
 };
 
 /* ---------------- State ---------------- */
