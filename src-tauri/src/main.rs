@@ -393,6 +393,64 @@ fn nisprog_raw(script: String) -> Result<String, String> {
     run_script(&commands)
 }
 
+/// One definition file's raw XML, handed to the frontend for Defs.register().
+#[derive(serde::Serialize)]
+struct DefFile {
+    name: String,
+    xml: String,
+}
+
+/// Read every *.xml under `dir` (recursive) so the frontend can register
+/// the Nissan definition set. `dir` falls back to NISDEFINITIONS_PATH —
+/// same env-var pattern as NISPROG_PATH.
+#[tauri::command]
+fn load_definitions(dir: Option<String>) -> Result<Vec<DefFile>, String> {
+    let dir = match dir {
+        Some(d) if !d.trim().is_empty() => d.trim().to_string(),
+        _ => std::env::var("NISDEFINITIONS_PATH").map_err(|_| {
+            "no definitions directory: pass one or set NISDEFINITIONS_PATH".to_string()
+        })?,
+    };
+    let root = PathBuf::from(&dir);
+    if !root.is_dir() {
+        return Err(format!("definitions directory not found: {dir}"));
+    }
+    let mut out = Vec::new();
+    let mut stack = vec![root];
+    while let Some(p) = stack.pop() {
+        let entries =
+            std::fs::read_dir(&p).map_err(|e| format!("cannot list {}: {e}", p.display()))?;
+        for entry in entries {
+            let entry = entry.map_err(|e| format!("bad dir entry: {e}"))?;
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let is_xml = path
+                .extension()
+                .and_then(|x| x.to_str())
+                .map(|x| x.eq_ignore_ascii_case("xml"))
+                .unwrap_or(false);
+            if !is_xml {
+                continue;
+            }
+            let xml = std::fs::read_to_string(&path)
+                .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+            out.push(DefFile {
+                name: path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("?")
+                    .to_string(),
+                xml,
+            });
+        }
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(out)
+}
+
 fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -402,7 +460,8 @@ fn main() {
             nisprog_raw,
             read_file_bin,
             read_table,
-            write_table
+            write_table,
+            load_definitions
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

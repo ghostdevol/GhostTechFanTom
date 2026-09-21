@@ -994,7 +994,7 @@
             <div class="maps-section">
                 <div class="panel">
                     <div class="panel-header">
-                        <div class="panel-title"><i class="fas fa-table-cells"></i> Fuel Map <span id="fuelDirty"></span></div>
+                        <div class="panel-title"><i class="fas fa-table-cells"></i> <span id="fuelTitle">Fuel Map</span> <span id="fuelDirty"></span></div>
                         <span style="font-size:0.65rem;color:var(--text-muted);">click a cell to edit</span>
                     </div>
                     <div class="panel-content">
@@ -1008,7 +1008,7 @@
                 </div>
                 <div class="panel">
                     <div class="panel-header">
-                        <div class="panel-title"><i class="fas fa-bolt"></i> Timing Map <span id="timingDirty"></span></div>
+                        <div class="panel-title"><i class="fas fa-bolt"></i> <span id="timingTitle">Timing Map</span> <span id="timingDirty"></span></div>
                         <span style="font-size:0.65rem;color:var(--text-muted);">click a cell to edit</span>
                     </div>
                     <div class="panel-content">
@@ -1064,7 +1064,7 @@
         </div>
     </div>
 
-    <div class="footer-note">GhostTech FanTom · sim mode — connect a bridge (Tauri <span style="font-family:'Courier New',monospace;">invoke</span>) to drive live data</div>
+    <div class="footer-note" id="footerNote"></div>
 
 <script src="definitions.js"></script>
 <script>
@@ -1094,6 +1094,8 @@ throw new Error('no native bridge (sim mode)');
 },
 get mode() { return this.tauri ? 'native' : 'sim'; }
 };
+// Tauri rejects with plain strings, not Errors — normalize for logging.
+function errMsg(e) { return (e && e.message) || String(e); }
 
 /* ---------------- State ---------------- */
 const S = {
@@ -1106,6 +1108,11 @@ const S = {
     maf: 0, timing: 15, voltage: 13.8, knock: 0,
     fuelMap: [],               // 8x8
     timingMap: [],             // 6x12
+    romPath: null,             // dumped ROM file on disk (read_table/write_table target)
+    romBytes: null,
+    definition: null,
+    defsLoaded: 0,             // # definition XML files registered
+    currentTable: { fuel: null, timing: null }, // definition table backing each grid
 };
 
 const RPM_AXIS = [800, 1200, 1600, 2200, 2800, 3600, 4400, 5600];
@@ -1141,18 +1148,31 @@ function timingClass(v, stock) {
 
 /* ---------------- Render: maps ---------------- */
 const stockTiming = [];
+function gridAxisLabels(t, nx, ny) {
+    const ax = (t && t.axisLabels) || {};
+    const fmt = (v) => (typeof v === 'number' ? (+v.toFixed(2)).toString() : String(v));
+    const x = (ax.x && ax.x.length === nx) ? ax.x.map(fmt)
+        : (nx === LOAD_AXIS.length ? LOAD_AXIS : Array.from({ length: nx }, (_, i) => i));
+    const y = (ax.y && ax.y.length === ny) ? ax.y.map(fmt)
+        : (ny === RPM_AXIS.length ? RPM_AXIS : Array.from({ length: ny }, (_, i) => i));
+    return { x, y };
+}
 function renderFuelMap() {
     const el = document.getElementById('fuelMap');
     el.innerHTML = '';
+    const nx = (S.fuelMap[0] || []).length, ny = S.fuelMap.length;
+    if (!nx || !ny) { el.innerHTML = '<div style="opacity:.55;padding:1rem">No table loaded</div>'; return; }
+    el.style.gridTemplateColumns = `50px repeat(${nx}, 1fr)`;
+    const { x: xAxis, y: yAxis } = gridAxisLabels(S.currentTable.fuel, nx, ny);
     el.appendChild(document.createElement('div')); // corner
-    LOAD_AXIS.forEach(h => {
+    xAxis.forEach(h => {
         const d = document.createElement('div');
         d.className = 'map-grid-header'; d.textContent = h;
         el.appendChild(d);
     });
     S.fuelMap.forEach((row, r) => {
         const rh = document.createElement('div');
-        rh.className = 'map-grid-row-header'; rh.textContent = RPM_AXIS[r];
+        rh.className = 'map-grid-row-header'; rh.textContent = yAxis[r];
         el.appendChild(rh);
         row.forEach((v, c) => {
             const cell = document.createElement('div');
@@ -1169,6 +1189,9 @@ function renderFuelMap() {
 function renderTimingMap() {
     const el = document.getElementById('timingMap');
     el.innerHTML = '';
+    const nx = (S.timingMap[0] || []).length;
+    if (!nx || !S.timingMap.length) { el.innerHTML = '<div style="opacity:.55;padding:1rem">No table loaded</div>'; return; }
+    el.style.gridTemplateColumns = `repeat(${nx}, 1fr)`;
     S.timingMap.forEach((row, r) => {
         row.forEach((v, c) => {
             if (stockTiming[r] === undefined) stockTiming[r] = [];
@@ -1186,11 +1209,13 @@ function renderTimingMap() {
 function renderSurface() {
     const el = document.getElementById('surfaceMap');
     el.innerHTML = '';
+    const ny = S.fuelMap.length, nx = (S.fuelMap[0] || []).length;
+    if (!nx || !ny) return;
     // one bar per load column, averaged over rpm
-    for (let c = 0; c < 8; c++) {
+    for (let c = 0; c < nx; c++) {
         let sum = 0;
-        for (let r = 0; r < 8; r++) sum += S.fuelMap[r][c];
-        const avg = sum / 8;
+        for (let r = 0; r < ny; r++) sum += S.fuelMap[r][c];
+        const avg = sum / ny;
         const h = Math.min(100, Math.max(8, (avg / 340) * 100));
         const bar = document.createElement('div');
         bar.className = 'surface-bar';
@@ -1219,13 +1244,38 @@ function editCell(cell, kind) {
         e.stopPropagation();
     });
     inp.addEventListener('blur', commit);
-    function commit() {
+    async function commit() {
         const v = parseInt(inp.value, 10);
         if (!isNaN(v)) {
-            if (kind === 'fuel') { S.fuelMap[r][c] = Math.max(0, Math.min(999, v)); }
-            else { S.timingMap[r][c] = Math.max(-20, Math.min(60, v)); }
-            markDirty();
-            log(`map edit: ${kind}[${r}][${c}] ${cur} → ${v}`, 'warn');
+            const t = S.currentTable[kind];
+            const grid = kind === 'fuel' ? S.fuelMap : S.timingMap;
+            if (t && S.romPath) {
+                // real table: validate against the storage type, reject out-of-range
+                const max = (t.storagetype === 'uint16') ? 65535 : 255;
+                if (v < 0 || v > max) {
+                    log(`map edit rejected: ${v} out of range 0–${max} for ${t.storagetype}`, 'err');
+                    renderAll();
+                    return;
+                }
+                grid[r][c] = v;
+                markDirty();
+                log(`map edit: ${t.name}[${r}][${c}] ${cur} → ${v} (raw)`, 'warn');
+                try {
+                    const res = await Bridge.invoke('write_table', {
+                        romPath: S.romPath,
+                        address: addrHex(t.address),
+                        storagetype: t.storagetype || 'uint8',
+                        endian: tableEndian(t),
+                        values: grid.flat(),
+                    });
+                    log('table: ' + res, 'ok');
+                } catch (e) { log('table write failed: ' + errMsg(e), 'err'); }
+            } else {
+                if (kind === 'fuel') { S.fuelMap[r][c] = Math.max(0, Math.min(999, v)); }
+                else { S.timingMap[r][c] = Math.max(-20, Math.min(60, v)); }
+                markDirty();
+                log(`map edit: ${kind}[${r}][${c}] ${cur} → ${v}`, 'warn');
+            }
         }
         renderAll();
     }
@@ -1268,7 +1318,75 @@ function renderBars() {
     });
 }
 
-const MAP_INDEX = [
+/* ---------------- Definitions ---------------- */
+// Load Nissan definition XMLs via the backend (NISDEFINITIONS_PATH env var
+// or an explicit dir), register each with the Defs engine.
+async function loadDefinitions(dir = null) {
+    if (!Bridge.tauri) { log('definitions: sim mode — skipping definition load', 'info'); return; }
+    try {
+        const files = await Bridge.invoke('load_definitions', { dir });
+        let ok = 0, tables = 0;
+        for (const f of files) {
+            try { const d = Defs.register(f.xml); ok++; tables += (d.tables || []).length; }
+            catch (e) { log(`definitions: skipping ${f.name} (${errMsg(e)})`, 'warn'); }
+        }
+        S.defsLoaded = ok;
+        if (ok) log(`definitions: ${ok} file(s), ${tables} table(s) parsed`, 'ok');
+        else log('definitions: none loaded — set NISDEFINITIONS_PATH to your NissanDefinitions folder and restart', 'warn');
+    } catch (e) {
+        log('definitions: ' + errMsg(e), 'warn');
+    }
+    renderMapIndex();
+}
+
+function addrHex(a) { return '0x' + a.toString(16).toUpperCase(); }
+function tableEndian(t) {
+    return t.endian || (S.definition && S.definition.romid && S.definition.romid.endian) || 'Big';
+}
+// Tables from the matched definition that live at a real ROM address.
+function addressableTables() {
+    const ts = (S.definition && S.definition.tables) || [];
+    return ts.filter(t => t.address != null);
+}
+// Load a definition table's real ROM values into a grid panel.
+async function viewTable(t, slot = 'fuel') {
+    if (!S.romPath) { log('table: dump a ROM first', 'warn'); return; }
+    const nx = t.sizex || 1, ny = t.sizey || 1;
+    log(`table: reading ${t.name} @ ${addrHex(t.address)} (${nx}×${ny} ${t.storagetype || 'uint8'})…`);
+    try {
+        const vals = await Bridge.invoke('read_table', {
+            romPath: S.romPath,
+            address: addrHex(t.address),
+            storagetype: t.storagetype || 'uint8',
+            size_x: nx, size_y: ny,
+            endian: tableEndian(t),
+        });
+        const grid = [];
+        for (let y = 0; y < ny; y++) grid.push(vals.slice(y * nx, (y + 1) * nx));
+        if (slot === 'timing') { S.timingMap = grid; document.getElementById('timingTitle').textContent = t.name; }
+        else { S.fuelMap = grid; document.getElementById('fuelTitle').textContent = t.name; }
+        S.currentTable[slot] = t;
+        // real axis labels from the ROM when the definition carries them
+        t.axisLabels = null;
+        try {
+            if (S.romBytes && t.xAxis) t.axisLabels = { x: Defs.readAxisScaled(S.romBytes, t.xAxis, tableEndian(t), nx) };
+            if (S.romBytes && t.yAxis) t.axisLabels = { ...(t.axisLabels || {}), y: Defs.readAxisScaled(S.romBytes, t.yAxis, tableEndian(t), ny) };
+        } catch (e) { /* static/default axes */ }
+        renderAll();
+        log(`table: ${t.name} loaded (${vals.length} values)`, 'ok');
+    } catch (e) { log('table read failed: ' + errMsg(e), 'err'); }
+}
+// After a ROM matches a definition: index its tables, auto-view the two
+// largest 2D tables so the grids show real data immediately.
+async function adoptDefinitionTables() {
+    renderMapIndex();
+    const twod = addressableTables().filter(t => (t.sizey || 0) > 1 && (t.sizex || 0) > 1)
+        .sort((a, b) => (b.sizex * b.sizey) - (a.sizex * a.sizey));
+    if (twod[0]) await viewTable(twod[0], 'fuel');
+    if (twod[1]) await viewTable(twod[1], 'timing');
+}
+
+const MAP_INDEX_FALLBACK = [
     ['High Fuel Map', '0x3D00', '16×16'], ['Low Fuel Map', '0x3E00', '16×16'],
     ['High Timing Map', '0x4200', '16×16'], ['Low Timing Map', '0x4300', '16×16'],
     ['TP Scale', '0x3A00', '16'], ['RPM Scale', '0x3A20', '16'],
@@ -1276,8 +1394,22 @@ const MAP_INDEX = [
 ];
 function renderMapIndex() {
     const el = document.getElementById('mapIndex');
-    el.innerHTML = MAP_INDEX.map(([n, a, s]) =>
-        `<tr><td class="highlight">${n}</td><td>${a}</td><td>${s}</td></tr>`).join('');
+    const tables = addressableTables();
+    if (!tables.length) {
+        if (!S.defsLoaded) {
+            el.innerHTML = '<tr><td colspan="3" style="opacity:.55">No definitions loaded</td></tr>';
+        } else if (!S.definition) {
+            el.innerHTML = '<tr><td colspan="3" style="opacity:.55">Dump a ROM to match its definition</td></tr>';
+        } else {
+            el.innerHTML = MAP_INDEX_FALLBACK.map(([n, a, s]) =>
+                `<tr><td class="highlight">${n}</td><td>${a}</td><td>${s}</td></tr>`).join('');
+        }
+        return;
+    }
+    el.innerHTML = tables.map((t, i) =>
+        `<tr data-ti="${i}" style="cursor:pointer" title="click to view"><td class="highlight">${t.name}</td><td>${addrHex(t.address)}</td><td>${t.sizex || 1}×${t.sizey || 1}</td></tr>`).join('');
+    el.querySelectorAll('tr[data-ti]').forEach(tr =>
+        tr.addEventListener('click', () => viewTable(tables[+tr.dataset.ti], 'fuel')));
 }
 
 const STATUS = [['ECU', 'ok'], ['K-Line', 'ok'], ['Kernel', 'warn'], ['ROM', 'warn']];
@@ -1354,8 +1486,12 @@ async function doDump() {
             try {
                 const m = /^DUMP_OK path=(.+)$/m.exec(String(res));
                 if (m) {
-                    const bytes = await Bridge.invoke('read_file_bin', { path: m[1] });
+                    S.romPath = m[1].trim();
+                    const bytes = await Bridge.invoke('read_file_bin', { path: S.romPath });
                     S.romBytes = bytes; // raw dump, kept for table parsing
+                    S.currentTable = { fuel: null, timing: null };
+                    document.getElementById('fuelTitle').textContent = 'Fuel Map';
+                    document.getElementById('timingTitle').textContent = 'Timing Map';
                     const def = Defs.matchRom(bytes);
                     if (def) {
                         const full = Defs.resolveBase(def);
@@ -1366,13 +1502,15 @@ async function doDump() {
                         document.getElementById('defName').textContent = full.romid.xmlid + ' · ' + full.romid.memmodel;
                         log(`dump: ${bytes.length} bytes — matched definition ${full.romid.xmlid} (${full.romid.memmodel}, ${full.romid.endian}-endian)`, 'ok');
                         if (full.checksums.length) log(`dump: ${full.checksums.length} checksum block(s) registered (${full.checksums.map(c => c.type).join(', ')})`, 'info');
+                        await adoptDefinitionTables();
                     } else {
                         S.romLoaded = true;
                         document.getElementById('romSize').textContent = Math.round(bytes.length / 1024) + ' KB';
                         log('dump: no loaded definition matched this ROM — load its XML definition to identify it', 'warn');
+                        renderMapIndex();
                     }
                 }
-            } catch (e2) { log('dump: ROM loaded but identification failed: ' + e2.message, 'warn'); }
+            } catch (e2) { log('dump: ROM loaded but identification failed: ' + errMsg(e2), 'warn'); }
         } else {
             // simulated dump with progress
             for (let p = 0; p <= 100; p += 5) { setProgress(p); await sleep(90); }
@@ -1384,7 +1522,7 @@ async function doDump() {
             log('dump: ECUID 8U92A detected, definition SH7055 applied', 'ok');
         }
     } catch (e) {
-        log('dump failed: ' + e.message, 'err');
+        log('dump failed: ' + errMsg(e), 'err');
     }
     showProgress(false);
     btn.disabled = false;
@@ -1411,7 +1549,7 @@ async function doFlash() {
         document.getElementById('fuelDirty').innerHTML = '';
         document.getElementById('timingDirty').innerHTML = '';
     } catch (e) {
-        log('flash failed: ' + e.message, 'err');
+        log('flash failed: ' + errMsg(e), 'err');
     }
     showProgress(false);
     btn.disabled = false;
@@ -1434,8 +1572,12 @@ renderMapIndex();
 renderStatus();
 renderAll();
 setSim(true);
-log('FanTom dashboard ready — sim mode', 'ok');
+log('FanTom dashboard ready — ' + Bridge.mode + ' mode', 'ok');
 log('bridge: ' + (Bridge.tauri ? 'native (Tauri invoke available)' : 'no native bridge, using simulator'), 'warn');
+document.getElementById('footerNote').innerHTML = Bridge.tauri
+    ? 'GhostTech FanTom · <b>native mode</b> — nisprog bridge active'
+    : 'GhostTech FanTom · sim mode — connect a bridge (Tauri invoke) to drive live data';
+if (Bridge.tauri) loadDefinitions();
 
 document.getElementById('connectBtn').addEventListener('click', () => {
     if (S.connected) { setConnected(false); log('disconnected'); }
@@ -1463,7 +1605,7 @@ document.getElementById('consoleInput').addEventListener('keydown', async (e) =>
         const out = await Bridge.invoke('nisprog_raw', { script: cmd });
         out.split('\n').forEach(line => { if (line.trim()) log(line, 'ok'); });
     } catch (err) {
-        log('error: ' + (err.message || err), 'err');
+        log('error: ' + errMsg(err), 'err');
     }
 });
 </script>
