@@ -913,7 +913,9 @@
                 <div class="panel-content">
                     <div class="toolbar" style="margin-bottom:0.75rem;">
                         <button class="btn dump" id="dumpBtn"><i class="fas fa-download"></i> Dump ROM</button>
+                        <button class="btn dump" id="openBtn"><i class="fas fa-folder-open"></i> Open ROM</button>
                         <button class="btn flash" id="flashBtn" disabled><i class="fas fa-upload"></i> Flash ROM</button>
+                        <input type="file" id="romFileInput" accept=".bin,.rom" style="display:none">
                     </div>
                     <div class="progress-wrap" id="progressWrap"><div class="progress-fill" id="progressFill"></div></div>
                     <div class="sensor-list" style="margin-top:0.75rem;">
@@ -1473,6 +1475,53 @@ function setConnected(on) {
     document.getElementById('connectBtn').innerHTML = on ? '<i class="fas fa-plug"></i> Disconnect' : '<i class="fas fa-plug"></i> Connect';
 }
 
+/// Identify ROM bytes against loaded definitions and populate the UI.
+/// Shared by doDump (fresh ECU dump) and doOpenRom (file picker).
+async function adoptRomBytes(bytes) {
+    S.romBytes = bytes; // raw dump, kept for table parsing
+    S.currentTable = { fuel: null, timing: null };
+    document.getElementById('fuelTitle').textContent = 'Fuel Map';
+    document.getElementById('timingTitle').textContent = 'Timing Map';
+    const def = Defs.matchRom(bytes);
+    if (def) {
+        const full = Defs.resolveBase(def);
+        S.definition = full;
+        S.romLoaded = true;
+        document.getElementById('ecuId').textContent = full.romid.ecuid || full.romid.internalidstring;
+        document.getElementById('romSize').textContent = Math.round(bytes.length / 1024) + ' KB';
+        document.getElementById('defName').textContent = full.romid.xmlid + ' · ' + full.romid.memmodel;
+        log(`rom: ${bytes.length} bytes — matched definition ${full.romid.xmlid} (${full.romid.memmodel}, ${full.romid.endian}-endian)`, 'ok');
+        if (full.checksums.length) log(`rom: ${full.checksums.length} checksum block(s) registered (${full.checksums.map(c => c.type).join(', ')})`, 'info');
+        await adoptDefinitionTables();
+    } else {
+        S.romLoaded = true;
+        document.getElementById('romSize').textContent = Math.round(bytes.length / 1024) + ' KB';
+        log('rom: no loaded definition matched this ROM — load its XML definition to identify it', 'warn');
+        renderMapIndex();
+    }
+    document.getElementById('flashBtn').disabled = !S.romLoaded;
+}
+
+async function doOpenRom() {
+    if (!Bridge.tauri) { log('open: ROM file picker needs the desktop app', 'warn'); return; }
+    const input = document.getElementById('romFileInput');
+    input.onchange = async () => {
+        const f = input.files && input.files[0];
+        input.value = '';
+        if (!f) return;
+        log('open: reading ' + f.name + '…');
+        try {
+            const buf = await f.arrayBuffer();
+            const bytes = Array.from(new Uint8Array(buf));
+            // stage to temp dir so read_table/write_table/flash have a real path
+            const staged = await Bridge.invoke('save_rom_temp', { name: f.name, data: bytes });
+            S.romPath = String(staged);
+            await adoptRomBytes(bytes);
+        } catch (e) { log('open failed: ' + errMsg(e), 'err'); }
+    };
+    input.click();
+}
+
 async function doDump() {
     const btn = document.getElementById('dumpBtn');
     btn.disabled = true;
@@ -1488,27 +1537,7 @@ async function doDump() {
                 if (m) {
                     S.romPath = m[1].trim();
                     const bytes = await Bridge.invoke('read_file_bin', { path: S.romPath });
-                    S.romBytes = bytes; // raw dump, kept for table parsing
-                    S.currentTable = { fuel: null, timing: null };
-                    document.getElementById('fuelTitle').textContent = 'Fuel Map';
-                    document.getElementById('timingTitle').textContent = 'Timing Map';
-                    const def = Defs.matchRom(bytes);
-                    if (def) {
-                        const full = Defs.resolveBase(def);
-                        S.definition = full;
-                        S.romLoaded = true;
-                        document.getElementById('ecuId').textContent = full.romid.ecuid || full.romid.internalidstring;
-                        document.getElementById('romSize').textContent = Math.round(bytes.length / 1024) + ' KB';
-                        document.getElementById('defName').textContent = full.romid.xmlid + ' · ' + full.romid.memmodel;
-                        log(`dump: ${bytes.length} bytes — matched definition ${full.romid.xmlid} (${full.romid.memmodel}, ${full.romid.endian}-endian)`, 'ok');
-                        if (full.checksums.length) log(`dump: ${full.checksums.length} checksum block(s) registered (${full.checksums.map(c => c.type).join(', ')})`, 'info');
-                        await adoptDefinitionTables();
-                    } else {
-                        S.romLoaded = true;
-                        document.getElementById('romSize').textContent = Math.round(bytes.length / 1024) + ' KB';
-                        log('dump: no loaded definition matched this ROM — load its XML definition to identify it', 'warn');
-                        renderMapIndex();
-                    }
+                    await adoptRomBytes(bytes);
                 }
             } catch (e2) { log('dump: ROM loaded but identification failed: ' + errMsg(e2), 'warn'); }
         } else {
@@ -1593,6 +1622,7 @@ document.getElementById('ecuSelect').addEventListener('change', (e) => {
     log('ECU family set to ' + S.ecu + ' — kernel npk_' + S.ecu, 'info');
 });
 document.getElementById('dumpBtn').addEventListener('click', doDump);
+document.getElementById('openBtn').addEventListener('click', doOpenRom);
 document.getElementById('flashBtn').addEventListener('click', doFlash);
 document.getElementById('consoleInput').addEventListener('keydown', async (e) => {
     if (e.key !== 'Enter') return;

@@ -276,6 +276,29 @@ fn read_file_bin(path: String) -> Result<Vec<u8>, String> {
     std::fs::read(&path).map_err(|e| format!("failed to read {path}: {e}"))
 }
 
+/// Stage ROM bytes picked via the frontend file picker into the temp dir so
+/// read_table/write_table/flash_rom have a real on-disk path. Returns the
+/// staged path. Name is made space-free for nisprog's sake.
+#[tauri::command]
+fn save_rom_temp(name: String, data: Vec<u8>) -> Result<String, String> {
+    let base = name.rsplit(['/', '\\']).next().unwrap_or("rom.bin");
+    let safe: String = base
+        .chars()
+        .map(|c| if c.is_whitespace() { '_' } else { c })
+        .collect();
+    let safe = if safe.is_empty() {
+        "rom.bin".to_string()
+    } else {
+        safe
+    };
+    let mut dir = std::env::temp_dir();
+    dir.push("fantom_roms");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("rom staging dir failed: {e}"))?;
+    dir.push(safe);
+    std::fs::write(&dir, &data).map_err(|e| format!("rom staging write failed: {e}"))?;
+    Ok(dir.to_string_lossy().to_string())
+}
+
 /// Parse a hex address string ("1A2B3C" or "0x1A2B3C") to a file offset.
 /// Mirrors NisROM's Table3DView: `Convert.ToUInt32(StorageAddress, 16)` —
 /// the XML storageaddress is a direct byte offset into the ROM dump.
@@ -459,6 +482,7 @@ fn main() {
             verify_rom,
             nisprog_raw,
             read_file_bin,
+            save_rom_temp,
             read_table,
             write_table,
             load_definitions
