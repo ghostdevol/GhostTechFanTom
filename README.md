@@ -1,33 +1,27 @@
-# GhostTech FanTom  
-Precision Tuning • Modular Architecture • Cinematic UI
+# GhostTech FanTom
 
-GhostTech **FanTom** is the next‑generation tuning interface built for creators, engineers, and system architects who demand clarity, control, and zero drift.  
-FanTom delivers a clean, cinematic front end paired with a modular backend pipeline designed for predictable, rule‑driven performance.
+Nissan/Infiniti ECU tuning suite — a desktop app for reading, editing, and flashing ECU ROMs.
 
----
+## What it does
 
-## 🚀 Features
+- Dump, flash, and verify ROMs on Nissan/Infiniti ECUs (SH705x family)
+- Read and write calibration tables directly from a ROM file
+- Checksum correction on flash
+- Bundled Nissan definition files for table layouts
 
-### • Modular Engine  
-FanTom’s backend is built around a clean service layer (`np_service`) that bridges legacy CLI commands into a modern, library‑style API.
+## Architecture
 
-### • Cinematic UI  
-A polished, Hugging‑Face‑inspired interface (`index.html`, `style.css`) gives FanTom a unique identity—minimal, sharp, and unmistakably GhostTech.
+Tauri desktop app: hand-built HTML/CSS/JS frontend + Rust backend.
 
-### • Cross‑Platform Workflow  
-Designed to run cleanly across:
-- Android (Termux)
-- Windows
-- Linux environments  
-All without breaking the architecture or introducing drift.
+- `frontend/` — the app UI (`index.html`, `definitions.js`)
+- `src-tauri/` — Rust backend; Tauri commands bridge the ECU tooling (dump, flash, verify, read/write tables)
 
-### • GhostTech Philosophy  
-FanTom follows the GhostTech Delivery Protocol:
-- Strict boundaries  
-- Predictable modules  
-- Zero creative drift in worker layers  
-- Architect‑level control at all times  
+The backend drives `nisprog`-compatible tooling over a serial interface (dumb/K-line interfaces supported).
 
----
+## Status
 
-## 📂 Project Structure
+Active development. A companion Android app (FanTom mobile) is in private beta; this repo is the desktop suite.
+
+## License
+
+See LICENSE.
