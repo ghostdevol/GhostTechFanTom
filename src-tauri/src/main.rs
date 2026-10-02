@@ -27,6 +27,10 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+mod consult;
+use consult::{Consult, ConsultSensors};
+use std::sync::Mutex;
+
 /// Locate nisprog.exe:
 ///   1. NISPROG_PATH env var (dev override)
 ///   2. sidecar next to the app binary (ship nisprog.exe beside FanTom.exe)
@@ -53,19 +57,37 @@ fn kernel_for_ecu(ecu: &str) -> String {
     format!("npk_{}", ecu.trim().to_uppercase())
 }
 
-/// setdev device numbers for the suite's nisprog build — verified via
-/// strings on the bundled exe (`setdev <device_no>`):
-/// 0 = 7051 (256KB), 1 = 7055 (512KB), 2 = 7058 (1024KB).
-fn setdev_num_for_ecu(ecu: &str) -> &'static str {
-    let e = ecu.to_uppercase();
-    if e.contains("7058") {
-        "2"
-    } else if e.contains("7051") {
-        "0"
+/// Resolve the nisprog `setdev` device number for an ECU family by asking
+/// nisprog itself (`setdev ?`). Device numbers vary between nisprog builds,
+/// so this is never hardcoded.
+fn setdev_num_for_ecu(ecu: &str) -> Result<String, String> {
+    // Query nisprog itself for the device table — device numbers vary
+    // between nisprog builds (Daniel's v1.00_test_42d34f: 0=7055, 1=7058;
+    // other builds: 0=7051, 1=7055, 2=7058). Never hardcode.
+    let out = run_script(&["setdev ?".to_string()])?;
+    let want = if ecu.to_uppercase().contains("7058") {
+        "7058"
+    } else if ecu.to_uppercase().contains("7055") {
+        "7055"
+    } else if ecu.to_uppercase().contains("7051") {
+        "7051"
     } else {
-        "1" // 7055 default
+        "7058" // default guess
+    };
+    for line in out.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        // lines look like: "  1 7058 1024k"
+        if parts.len() >= 3 && parts[1].contains(want) {
+            if let Ok(n) = parts[0].parse::<u32>() {
+                return Ok(n.to_string());
+            }
+        }
     }
+    Err(format!(
+        "no device number found for '{want}' in nisprog device list:\n{out}"
+    ))
 }
+
 
 /// Resolve the kernel path: explicit path wins, otherwise try
 /// `<base>.bin` then `<base>` next to nisprog.exe (Binaries ships .bin).
@@ -180,7 +202,7 @@ fn dump_rom(
     let start = start.unwrap_or_else(|| "0".to_string());
     let length = length.unwrap_or_else(|| "0".to_string()); // 0 = full ROM
     let ecu = ecu.unwrap_or_else(|| "SH7055_18".to_string());
-    let devnum = setdev_num_for_ecu(&ecu);
+    let devnum = setdev_num_for_ecu(&ecu)?;
     let kernel = resolve_kernel(&ecu, kernel);
     let kernel = stage_nospace(&kernel, "kernels")?;
     let kernel = kernel.to_string_lossy().to_string();
@@ -223,7 +245,7 @@ fn flash_rom(
 ) -> Result<String, String> {
     let rom_file = rom_file.unwrap_or_else(|| "dump.bin".to_string());
     let ecu = ecu.unwrap_or_else(|| "SH7055_18".to_string());
-    let devnum = setdev_num_for_ecu(&ecu);
+    let devnum = setdev_num_for_ecu(&ecu)?;
     let kernel = resolve_kernel(&ecu, kernel);
     let kernel = stage_nospace(&kernel, "kernels")?;
     let kernel = kernel.to_string_lossy().to_string();
@@ -253,7 +275,7 @@ fn verify_rom(
     kernel: Option<String>,
 ) -> Result<String, String> {
     let ecu = ecu.unwrap_or_else(|| "SH7055_18".to_string());
-    let devnum = setdev_num_for_ecu(&ecu);
+    let devnum = setdev_num_for_ecu(&ecu)?;
     let kernel = resolve_kernel(&ecu, kernel);
     let kernel = stage_nospace(&kernel, "kernels")?;
     let kernel = kernel.to_string_lossy().to_string();
@@ -274,29 +296,6 @@ fn verify_rom(
 #[tauri::command]
 fn read_file_bin(path: String) -> Result<Vec<u8>, String> {
     std::fs::read(&path).map_err(|e| format!("failed to read {path}: {e}"))
-}
-
-/// Stage ROM bytes picked via the frontend file picker into the temp dir so
-/// read_table/write_table/flash_rom have a real on-disk path. Returns the
-/// staged path. Name is made space-free for nisprog's sake.
-#[tauri::command]
-fn save_rom_temp(name: String, data: Vec<u8>) -> Result<String, String> {
-    let base = name.rsplit(['/', '\\']).next().unwrap_or("rom.bin");
-    let safe: String = base
-        .chars()
-        .map(|c| if c.is_whitespace() { '_' } else { c })
-        .collect();
-    let safe = if safe.is_empty() {
-        "rom.bin".to_string()
-    } else {
-        safe
-    };
-    let mut dir = std::env::temp_dir();
-    dir.push("fantom_roms");
-    std::fs::create_dir_all(&dir).map_err(|e| format!("rom staging dir failed: {e}"))?;
-    dir.push(safe);
-    std::fs::write(&dir, &data).map_err(|e| format!("rom staging write failed: {e}"))?;
-    Ok(dir.to_string_lossy().to_string())
 }
 
 /// Parse a hex address string ("1A2B3C" or "0x1A2B3C") to a file offset.
@@ -426,6 +425,51 @@ struct DefFile {
 /// Read every *.xml under `dir` (recursive) so the frontend can register
 /// the Nissan definition set. `dir` falls back to NISDEFINITIONS_PATH —
 /// same env-var pattern as NISPROG_PATH.
+
+/// Open CONSULT connection to ECU for live data.
+/// Returns success message on connection.
+#[tauri::command]
+fn consult_connect(port: String, state: tauri::State<Mutex<Option<Consult>>>) -> Result<String, String> {
+    let c = Consult::new(&port)?;
+    let mut guard = state.lock().map_err(|e| format!("Lock failed: {}", e))?;
+    *guard = Some(c);
+    Ok(format!("CONSULT connected on {}", port))
+}
+
+/// Read live sensor data from ECU via CONSULT.
+/// Requires consult_connect to have been called first.
+#[tauri::command]
+fn consult_sensors(state: tauri::State<Mutex<Option<Consult>>>) -> Result<ConsultSensors, String> {
+    let mut guard = state.lock().map_err(|e| format!("Lock failed: {}", e))?;
+    let c = guard.as_mut().ok_or("Not connected — call consult_connect first")?;
+    c.read_sensors()
+}
+
+/// Get ECU part number via CONSULT.
+#[tauri::command]
+fn consult_ecu_info(state: tauri::State<Mutex<Option<Consult>>>) -> Result<String, String> {
+    let mut guard = state.lock().map_err(|e| format!("Lock failed: {}", e))?;
+    let c = guard.as_mut().ok_or("Not connected — call consult_connect first")?;
+    c.get_ecu_part_number()
+}
+
+/// Get stored DTC count via CONSULT.
+#[tauri::command]
+fn consult_dtc_count(state: tauri::State<Mutex<Option<Consult>>>) -> Result<u8, String> {
+    let mut guard = state.lock().map_err(|e| format!("Lock failed: {}", e))?;
+    let c = guard.as_mut().ok_or("Not connected — call consult_connect first")?;
+    c.get_error_count()
+}
+
+/// Clear DTCs via CONSULT.
+#[tauri::command]
+fn consult_clear_dtc(state: tauri::State<Mutex<Option<Consult>>>) -> Result<String, String> {
+    let mut guard = state.lock().map_err(|e| format!("Lock failed: {}", e))?;
+    let c = guard.as_mut().ok_or("Not connected — call consult_connect first")?;
+    c.clear_codes()?;
+    Ok("DTCs cleared".to_string())
+}
+
 #[tauri::command]
 fn load_definitions(dir: Option<String>) -> Result<Vec<DefFile>, String> {
     let dir = match dir {
@@ -476,13 +520,18 @@ fn load_definitions(dir: Option<String>) -> Result<Vec<DefFile>, String> {
 
 fn main() {
     tauri::Builder::default()
+        .manage(Mutex::new(None::<Consult>))
         .invoke_handler(tauri::generate_handler![
             dump_rom,
             flash_rom,
+            consult_connect,
+            consult_sensors,
+            consult_ecu_info,
+            consult_dtc_count,
+            consult_clear_dtc,
             verify_rom,
             nisprog_raw,
             read_file_bin,
-            save_rom_temp,
             read_table,
             write_table,
             load_definitions

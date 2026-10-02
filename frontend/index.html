@@ -882,6 +882,14 @@
             background: linear-gradient(90deg, var(--accent-cyan), var(--accent-purple));
             transition: width 0.2s;
         }
+        .hex-view { font-family: monospace; font-size: 0.72rem; line-height: 1.7; overflow-x: auto; margin-top: 0.4rem; }
+        .hex-row { white-space: nowrap; }
+        .hex-addr { color: var(--accent-cyan); margin-right: 0.5rem; }
+        .hex-byte { padding: 0 0.18rem; border-radius: 3px; cursor: pointer; }
+        .hex-byte:hover { background: var(--accent-cyan); color: #000; }
+        .hex-pad { cursor: default; }
+        .hex-pad:hover { background: none; }
+        .hex-asc { color: var(--text-secondary); margin-left: 0.5rem; }
     </style>
 </head>
 <body>
@@ -913,9 +921,10 @@
                 <div class="panel-content">
                     <div class="toolbar" style="margin-bottom:0.75rem;">
                         <button class="btn dump" id="dumpBtn"><i class="fas fa-download"></i> Dump ROM</button>
-                        <button class="btn dump" id="openBtn"><i class="fas fa-folder-open"></i> Open ROM</button>
                         <button class="btn flash" id="flashBtn" disabled><i class="fas fa-upload"></i> Flash ROM</button>
-                        <input type="file" id="romFileInput" accept=".bin,.rom" style="display:none">
+                        <button class="btn" id="loadRomBtn"><i class="fas fa-folder-open"></i> Load ROM</button>
+                        <input type="file" id="loadRomFile" accept=".bin,.rom" style="display:none;">
+                        <button class="btn" id="saveRomBtn" disabled><i class="fas fa-save"></i> Save ROM</button>
                     </div>
                     <div class="progress-wrap" id="progressWrap"><div class="progress-fill" id="progressFill"></div></div>
                     <div class="sensor-list" style="margin-top:0.75rem;">
@@ -1057,6 +1066,23 @@
 
             <div class="panel">
                 <div class="panel-header">
+                    <div class="panel-title"><i class="fas fa-hashtag"></i> Hex Editor</div>
+                </div>
+                <div class="panel-content">
+                    <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;">
+                        <span style="color:var(--text-secondary);font-size:0.75rem;">Address</span>
+                        <input type="text" id="hexAddr" placeholder="0x0" style="width:7rem;" />
+                        <button class="btn" id="hexGo"><i class="fas fa-arrow-right"></i> Go</button>
+                        <button class="btn" id="hexPrev"><i class="fas fa-chevron-up"></i></button>
+                        <button class="btn" id="hexNext"><i class="fas fa-chevron-down"></i></button>
+                    </div>
+                    <div class="hex-view" id="hexView"></div>
+                    <div id="hexInfo" style="color:var(--text-secondary);font-size:0.72rem;margin-top:0.4rem;">load a ROM to edit bytes</div>
+                </div>
+            </div>
+
+            <div class="panel">
+                <div class="panel-header">
                     <div class="panel-title"><i class="fas fa-heart-pulse"></i> Status</div>
                 </div>
                 <div class="panel-content">
@@ -1066,16 +1092,251 @@
         </div>
     </div>
 
+<!-- GhostTech Tuner Panel -->
+<div class="panel" id="ghosttechPanel">
+  <div class="panel-header">
+    <div class="panel-title"><i class="fas fa-ghost"></i> GhostTech Tuner</div>
+    <span style="font-size:0.7rem;color:var(--text-secondary);" id="gtStatus">ready</span>
+  </div>
+  <div class="panel-content">
+    <div style="display:flex;gap:4px;margin-bottom:12px;flex-wrap:wrap;">
+      <button class="btn gt-tab active" data-tab="tunes" style="padding:0.3rem 0.6rem;font-size:0.72rem;">Tunes</button>
+      <button class="btn gt-tab" data-tab="sliders" style="padding:0.3rem 0.6rem;font-size:0.72rem;">Sliders</button>
+      <button class="btn gt-tab" data-tab="twostep" style="padding:0.3rem 0.6rem;font-size:0.72rem;">2-Step</button>
+      <button class="btn gt-tab" data-tab="safety" style="padding:0.3rem 0.6rem;font-size:0.72rem;">Safety</button>
+      <button class="btn gt-tab" data-tab="defbuilder" style="padding:0.3rem 0.6rem;font-size:0.72rem;">Definition</button>
+      <button class="btn gt-tab" data-tab="gauges" style="padding:0.3rem 0.6rem;font-size:0.72rem;">Gauges</button>
+    </div>
+    <div class="gt-tabpage" id="gt-tunes">
+      <div style="margin-bottom:8px;color:var(--text-secondary);font-size:0.72rem;">Select a preset tune.</div>
+      <div id="gtTuneGrid" style="display:grid;grid-template-columns:1fr 1fr;gap:6px;max-height:250px;overflow-y:auto;"></div>
+      <div id="gtTuneDesc" style="margin-top:8px;padding:8px;background:var(--bg-tertiary);border-radius:6px;font-size:0.72rem;min-height:40px;"></div>
+      <div style="margin-top:8px;">
+        <button class="btn dump" id="gtApplyTuneBtn" disabled><i class="fas fa-check"></i> Apply Tune to ROM</button>
+      </div>
+    </div>
+    <div class="gt-tabpage" id="gt-sliders" style="display:none;">
+      <div id="gtSliderList"></div>
+      <div id="gtSliderWarnings" style="margin-top:8px;"></div>
+      <div style="margin-top:8px;">
+        <button class="btn" id="gtExportTuneBtn"><i class="fas fa-download"></i> Export Tune</button>
+        <button class="btn" id="gtResetSlidersBtn"><i class="fas fa-undo"></i> Reset</button>
+      </div>
+    </div>
+    <div class="gt-tabpage" id="gt-twostep" style="display:none;">
+      <label style="display:flex;align-items:center;gap:0.4rem;margin-bottom:0.6rem;cursor:pointer;">
+        <input type="checkbox" id="gtGhostfireEnable"> GhostFire 2-Step
+      </label>
+      <div style="margin-bottom:0.6rem;">
+        <span style="color:var(--text-secondary);font-size:0.72rem;">RPM Target: </span>
+        <input type="range" id="gtGhostfireRpm" min="2500" max="5000" step="50" value="3500" style="width:200px;vertical-align:middle;">
+        <span id="gtGhostfireRpmVal" style="font-size:0.72rem;">3500</span>
+      </div>
+      <div style="margin-bottom:0.6rem;">
+        <span style="color:var(--text-secondary);font-size:0.72rem;">Timing Pull: </span>
+        <input type="range" id="gtTimingPull" min="0" max="20" step="1" value="12" style="width:200px;vertical-align:middle;">
+        <span id="gtTimingPullVal" style="font-size:0.72rem;">-12°</span>
+      </div>
+      <label style="display:flex;align-items:center;gap:0.4rem;margin-bottom:0.6rem;cursor:pointer;">
+        <input type="checkbox" id="gtRollingEnable"> Rolling 2-Step
+      </label>
+      <div style="margin-bottom:0.6rem;">
+        <span style="color:var(--text-secondary);font-size:0.72rem;">Rolling RPM: </span>
+        <input type="range" id="gtRollingRpm" min="3000" max="5500" step="50" value="4200" style="width:200px;vertical-align:middle;">
+        <span id="gtRollingRpmVal" style="font-size:0.72rem;">4200</span>
+      </div>
+      <div style="margin-bottom:0.6rem;">
+        <span style="color:var(--text-secondary);font-size:0.72rem;">Trigger: </span>
+        <select id="gtTwostepTrigger" style="background:var(--bg-tertiary);border:1px solid var(--border-color);border-radius:6px;color:var(--text-primary);padding:0.25rem;font-size:0.72rem;">
+          <option value="VOL_PRESS" selected>Volume Press (arm/disarm)</option>
+          <option value="VOL_UP">Volume Up</option>
+          <option value="VOL_DOWN">Volume Down</option>
+          <option value="SEEK_UP">Seek Up</option>
+          <option value="SEEK_DOWN">Seek Down</option>
+          <option value="HAZARD">Hazard Button</option>
+          <option value="BRAKE">Brake Pedal</option>
+        </select>
+      </div>
+    </div>
+    <div class="gt-tabpage" id="gt-safety" style="display:none;">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
+        <div><span style="font-size:0.72rem;">Boost (PSI): </span><input type="number" id="gtBoost" value="0" style="width:70px;background:var(--bg-tertiary);border:1px solid var(--border-color);border-radius:4px;color:var(--text-primary);padding:0.2rem;"></div>
+        <div><span style="font-size:0.72rem;">Timing (°): </span><input type="number" id="gtTiming" value="20" style="width:70px;background:var(--bg-tertiary);border:1px solid var(--border-color);border-radius:4px;color:var(--text-primary);padding:0.2rem;"></div>
+        <div><span style="font-size:0.72rem;">Octane: </span><input type="number" id="gtOctane" value="93" style="width:70px;background:var(--bg-tertiary);border:1px solid var(--border-color);border-radius:4px;color:var(--text-primary);padding:0.2rem;"></div>
+        <div><span style="font-size:0.72rem;">Compression: </span><input type="number" id="gtComp" value="10.3" step="0.1" style="width:70px;background:var(--bg-tertiary);border:1px solid var(--border-color);border-radius:4px;color:var(--text-primary);padding:0.2rem;"></div>
+      </div>
+      <button class="btn" id="gtCalcRiskBtn"><i class="fas fa-calculator"></i> Calculate Risk</button>
+      <div id="gtRiskResult" style="margin-top:8px;padding:8px;border-radius:6px;font-size:0.72rem;"></div>
+    </div>
+    <div class="gt-tabpage" id="gt-defbuilder" style="display:none;">
+      <button class="btn" id="gtBuildDefBtn"><i class="fas fa-search"></i> Scan ROM & Build Definition</button>
+      <div id="gtDefResult" style="margin-top:8px;max-height:200px;overflow-y:auto;font-size:0.7rem;font-family:monospace;"></div>
+      <div style="margin-top:8px;"><button class="btn" id="gtExportDefBtn"><i class="fas fa-download"></i> Export Definition</button></div>
+    </div>
+    <div class="gt-tabpage" id="gt-gauges" style="display:none;">
+      <div id="gtThemeSwitcher" style="display:flex;gap:8px;flex-wrap:wrap;"></div>
+    </div>
+  </div>
+</div>
+<script>
+(function(){
+  document.querySelectorAll('.gt-tab').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      document.querySelectorAll('.gt-tab').forEach(function(b){b.classList.remove('active');});
+      document.querySelectorAll('.gt-tabpage').forEach(function(p){p.style.display='none';});
+      btn.classList.add('active');
+      document.getElementById('gt-'+btn.dataset.tab).style.display='block';
+    });
+  });
+  var selectedTune=null;
+  function renderTunes(){
+    var grid=document.getElementById('gtTuneGrid');
+    if(!grid||typeof TIER_TUNES==='undefined')return;
+    grid.innerHTML='';
+    var tunes=getAllTunesSorted();
+    var lastTier=0;
+    tunes.forEach(function(tune){
+      if(tune.tier!==lastTier){
+        lastTier=tune.tier;
+        var hdr=document.createElement('div');
+        hdr.style.cssText='grid-column:1/-1;font-weight:bold;font-size:0.78rem;margin-top:6px;color:var(--accent-cyan);';
+        hdr.textContent='— Tier '+tune.tier+' —';
+        grid.appendChild(hdr);
+      }
+      var b=document.createElement('button');
+      b.className='btn';b.style.cssText='text-align:left;padding:8px;font-size:0.72rem;';
+      b.innerHTML='<div style="font-weight:bold;">Stage '+tune.stage+'</div><div style="font-size:0.65rem;opacity:0.7;">'+tune.category+'</div>';
+      b.onclick=function(){
+        selectedTune=tune.id;
+        var hwHtml=tune.hardware.map(function(h){return '<div style="font-size:0.68rem;">• '+h+'</div>';}).join('');
+        document.getElementById('gtTuneDesc').innerHTML=
+          '<b style="font-size:0.8rem;">'+tune.name+'</b><br>'+
+          '<div style="margin:6px 0;">'+tune.description+'</div>'+
+          '<div style="font-weight:bold;margin-top:8px;font-size:0.72rem;">Recommended Hardware:</div>'+hwHtml+
+          '<div style="margin-top:8px;padding:6px;background:rgba(255,170,0,0.1);border-left:3px solid #ffaa00;font-size:0.7rem;">⚠ '+tune.warning+'</div>';
+        grid.querySelectorAll('.btn').forEach(function(x){x.classList.remove('active');});
+        b.classList.add('active');
+        document.getElementById('gtStatus').textContent='tune: '+tune.name;
+        document.getElementById('gtApplyTuneBtn').disabled=false;
+      };
+      grid.appendChild(b);
+    });
+  }
+  var sliderValues={};
+  function renderSliders(){
+    var list=document.getElementById('gtSliderList');
+    if(!list||typeof TUNE_SLIDERS==='undefined')return;
+    list.innerHTML='';
+    Object.keys(TUNE_SLIDERS).forEach(function(id){
+      var s=TUNE_SLIDERS[id];
+      var row=document.createElement('div');
+      row.style.cssText='margin-bottom:8px;display:flex;align-items:center;gap:8px;';
+      row.innerHTML='<span style="min-width:110px;font-size:0.72rem;">'+s.name+'</span><input type="range" id="gtsl-'+id+'" min="'+s.min+'" max="'+s.max+'" step="'+s.step+'" value="'+s.default+'" style="flex:1;"><span id="gtsl-'+id+'-v" style="min-width:50px;font-size:0.72rem;">'+s.default+s.unit+'</span>';
+      list.appendChild(row);
+      sliderValues[id]=s.default;
+      var inp=row.querySelector('#gtsl-'+id);
+      inp.addEventListener('input',function(){
+        var v=parseFloat(inp.value);sliderValues[id]=v;
+        row.querySelector('#gtsl-'+id+'-v').textContent=v+s.unit;
+        if(typeof applySlider!=='undefined'){
+          var r=applySlider({},id,v,{boostPsi:sliderValues.boost_target||0,octane:93,compressionRatio:10.3});
+          var wd=document.getElementById('gtSliderWarnings');
+          wd.innerHTML=r.warnings.map(function(w){return '<div style="color:#ffaa00;font-size:0.72rem;">⚠ '+w+'</div>';}).join('');
+        }
+      });
+    });
+  }
+  var expBtn=document.getElementById('gtExportTuneBtn');
+  if(expBtn)expBtn.addEventListener('click',function(){
+    if(typeof exportGhostTech==='undefined')return;
+    var t=exportGhostTech('Custom Tune',sliderValues,{vehicle:'2005 Infiniti M35x'});
+    var blob=new Blob([t],{type:'text/plain'});var a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);a.download='ghosttech_tune.txt';a.click();
+  });
+  var rsBtn=document.getElementById('gtResetSlidersBtn');
+  if(rsBtn)rsBtn.addEventListener('click',function(){renderSliders();document.getElementById('gtSliderWarnings').innerHTML='';});
+  var gr=document.getElementById('gtGhostfireRpm');
+  if(gr)gr.addEventListener('input',function(){document.getElementById('gtGhostfireRpmVal').textContent=this.value;});
+  var tp=document.getElementById('gtTimingPull');
+  if(tp)tp.addEventListener('input',function(){document.getElementById('gtTimingPullVal').textContent='-'+this.value+'°';});
+  var rr=document.getElementById('gtRollingRpm');
+  if(rr)rr.addEventListener('input',function(){document.getElementById('gtRollingRpmVal').textContent=this.value;});
+  var calcBtn=document.getElementById('gtCalcRiskBtn');
+  if(calcBtn)calcBtn.addEventListener('click',function(){
+    if(typeof calculateDetonationRisk==='undefined')return;
+    var r=calculateDetonationRisk({boostPsi:parseFloat(document.getElementById('gtBoost').value)||0,timingAdvance:parseFloat(document.getElementById('gtTiming').value)||0,octane:parseFloat(document.getElementById('gtOctane').value)||93,compressionRatio:parseFloat(document.getElementById('gtComp').value)||10.3});
+    var colors={SAFE:'#00ff88',CAUTION:'#ffaa00',WARNING:'#ff8800',DANGEROUS:'#ff3333',CATASTROPHIC:'#ff0000'};
+    var d=document.getElementById('gtRiskResult');
+    d.style.borderLeft='4px solid '+(colors[r.riskLevel]||'#888');
+    d.innerHTML='<div style="font-weight:bold;color:'+colors[r.riskLevel]+';">'+r.riskLevel+'</div><div style="margin:4px 0;">'+r.riskDescription+'</div><div style="color:#888;">Required: '+r.calculations.requiredOctane+' | Margin: '+r.calculations.octaneMargin+'</div>'+r.recommendations.map(function(x){return '<div style="color:#ffaa00;">• '+x+'</div>';}).join('');
+  });
+  var curDef=null;
+  var bdBtn=document.getElementById('gtBuildDefBtn');
+  if(bdBtn)bdBtn.addEventListener('click',function(){
+    if(typeof buildDefinition==='undefined')return;
+    var rb=(typeof S!=='undefined'&&S.romBytes)?S.romBytes:null;
+    if(!rb){document.getElementById('gtDefResult').innerHTML='<div style="color:#ffaa00;">Load a ROM first</div>';return;}
+    curDef=buildDefinition(new Uint8Array(rb),'uploaded_rom.bin');
+    document.getElementById('gtDefResult').innerHTML='<div>Tables: '+curDef.tables.length+' | Axes: '+curDef.axes.length+'</div><br>'+curDef.tables.slice(0,20).map(function(t){return '<div>0x'+t.address.toString(16).toUpperCase()+' = '+t.shape+' ('+t.score+'%)</div>';}).join('');
+  });
+  var edBtn=document.getElementById('gtExportDefBtn');
+  if(edBtn)edBtn.addEventListener('click',function(){
+    if(!curDef||typeof definitionToGhostTech==='undefined')return;
+    var t=definitionToGhostTech(curDef);
+    var blob=new Blob([t],{type:'text/plain'});var a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);a.download='ghosttech_definition.txt';a.click();
+  });
+  function renderThemes(){
+    var c=document.getElementById('gtThemeSwitcher');
+    if(!c||typeof GAUGE_THEMES==='undefined')return;
+    c.innerHTML='';
+    Object.keys(GAUGE_THEMES).forEach(function(id){
+      var th=GAUGE_THEMES[id];
+      var b=document.createElement('button');
+      b.className='btn';b.style.cssText='border:2px solid '+th.colors.primary+';padding:10px;';
+      b.innerHTML='<div style="color:'+th.colors.primary+';font-weight:bold;font-size:0.72rem;">'+th.name+'</div><div style="font-size:0.65rem;opacity:0.7;">'+th.description+'</div>';
+      b.onclick=function(){if(typeof setGaugeTheme!=='undefined')setGaugeTheme(id);};
+      c.appendChild(b);
+    });
+  }
+  var applyBtn=document.getElementById('gtApplyTuneBtn');
+  if(applyBtn)applyBtn.addEventListener('click',function(){
+    if(!selectedTune||typeof TIER_TUNES==='undefined')return;
+    var tune=TIER_TUNES[selectedTune];
+    if(typeof S!=='undefined'){
+      S.dirty=true;
+      S.selectedTune=tune.id;
+      S.tuneParams=tune.params;
+      // Enable flash button
+      var fb=document.getElementById('flashBtn');
+      if(fb)fb.disabled=false;
+    }
+    if(typeof log!=='undefined'){
+      log('tune applied: '+tune.name,'ok');
+      log('  fuel trim: x'+tune.params.fuelTrim+' | timing: '+(tune.params.timingAdd>0?'+':'')+tune.params.timingAdd+'° | rev limit: '+tune.params.revLimit,'info');
+      if(tune.params.boostTarget)log('  boost target: '+tune.params.boostTarget+' PSI','info');
+    }
+    document.getElementById('gtStatus').textContent='applied: '+tune.name;
+  });
+  renderTunes();renderSliders();renderThemes();
+})();
+</script>
+
     <div class="footer-note" id="footerNote"></div>
 
 <script src="definitions.js"></script>
+<script src="js/rom-editor.js"></script>
+<script src="js/tier-tunes-9.js"></script>
+<script src="js/tune-sliders.js"></script>
+<script src="js/detonation-calculator.js"></script>
+<script src="js/definition-builder.js"></script>
+<script src="js/gauge-themes.js"></script>
 <script>
 'use strict';
 /* ============================================================
    GhostTech FanTom — Dyno Dashboard
    Data flows through the FanTom bridge. In a Tauri shell the
-   bridge calls window.__TAURI__.invoke(); in a plain browser
-   it falls back to the built-in simulator.
+   bridge calls window.__TAURI__.invoke().
    ============================================================ */
 
 const logConsole = document.getElementById('logConsole');
@@ -1096,6 +1357,17 @@ throw new Error('no native bridge (sim mode)');
 },
 get mode() { return this.tauri ? 'native' : 'sim'; }
 };
+/* Editor routing (Android parity): a ROM loaded from a file is served by
+ * the in-memory RomEditor engine; a ROM dumped from the ECU keeps the
+ * Rust backend (real file on disk). Same invoke argument shapes. */
+async function readTableSmart(args) {
+    if (S.romSource === 'file' && window.RomEditor) return RomEditor.readTable(args);
+    return Bridge.invoke('read_table', args);
+}
+async function writeTableSmart(args) {
+    if (S.romSource === 'file' && window.RomEditor) return RomEditor.writeTable(args);
+    return Bridge.invoke('write_table', args);
+}
 // Tauri rejects with plain strings, not Errors — normalize for logging.
 function errMsg(e) { return (e && e.message) || String(e); }
 
@@ -1112,6 +1384,8 @@ const S = {
     timingMap: [],             // 6x12
     romPath: null,             // dumped ROM file on disk (read_table/write_table target)
     romBytes: null,
+    romSource: null,           // 'file' = editor (in-memory) | 'dump' = backend file
+    romFileName: null,
     definition: null,
     defsLoaded: 0,             // # definition XML files registered
     currentTable: { fuel: null, timing: null }, // definition table backing each grid
@@ -1232,6 +1506,8 @@ function markDirty() {
     document.getElementById('fuelDirty').innerHTML = '<span class="dirty-badge">MODIFIED</span>';
     document.getElementById('timingDirty').innerHTML = '<span class="dirty-badge">MODIFIED</span>';
     document.getElementById('flashBtn').disabled = !S.romLoaded;
+    const sb = document.getElementById('saveRomBtn');
+    if (sb) sb.disabled = !S.romLoaded;
 }
 
 function editCell(cell, kind) {
@@ -1263,7 +1539,7 @@ function editCell(cell, kind) {
                 markDirty();
                 log(`map edit: ${t.name}[${r}][${c}] ${cur} → ${v} (raw)`, 'warn');
                 try {
-                    const res = await Bridge.invoke('write_table', {
+                    const res = await writeTableSmart({
                         romPath: S.romPath,
                         address: addrHex(t.address),
                         storagetype: t.storagetype || 'uint8',
@@ -1356,7 +1632,7 @@ async function viewTable(t, slot = 'fuel') {
     const nx = t.sizex || 1, ny = t.sizey || 1;
     log(`table: reading ${t.name} @ ${addrHex(t.address)} (${nx}×${ny} ${t.storagetype || 'uint8'})…`);
     try {
-        const vals = await Bridge.invoke('read_table', {
+        const vals = await readTableSmart({
             romPath: S.romPath,
             address: addrHex(t.address),
             storagetype: t.storagetype || 'uint8',
@@ -1475,53 +1751,6 @@ function setConnected(on) {
     document.getElementById('connectBtn').innerHTML = on ? '<i class="fas fa-plug"></i> Disconnect' : '<i class="fas fa-plug"></i> Connect';
 }
 
-/// Identify ROM bytes against loaded definitions and populate the UI.
-/// Shared by doDump (fresh ECU dump) and doOpenRom (file picker).
-async function adoptRomBytes(bytes) {
-    S.romBytes = bytes; // raw dump, kept for table parsing
-    S.currentTable = { fuel: null, timing: null };
-    document.getElementById('fuelTitle').textContent = 'Fuel Map';
-    document.getElementById('timingTitle').textContent = 'Timing Map';
-    const def = Defs.matchRom(bytes);
-    if (def) {
-        const full = Defs.resolveBase(def);
-        S.definition = full;
-        S.romLoaded = true;
-        document.getElementById('ecuId').textContent = full.romid.ecuid || full.romid.internalidstring;
-        document.getElementById('romSize').textContent = Math.round(bytes.length / 1024) + ' KB';
-        document.getElementById('defName').textContent = full.romid.xmlid + ' · ' + full.romid.memmodel;
-        log(`rom: ${bytes.length} bytes — matched definition ${full.romid.xmlid} (${full.romid.memmodel}, ${full.romid.endian}-endian)`, 'ok');
-        if (full.checksums.length) log(`rom: ${full.checksums.length} checksum block(s) registered (${full.checksums.map(c => c.type).join(', ')})`, 'info');
-        await adoptDefinitionTables();
-    } else {
-        S.romLoaded = true;
-        document.getElementById('romSize').textContent = Math.round(bytes.length / 1024) + ' KB';
-        log('rom: no loaded definition matched this ROM — load its XML definition to identify it', 'warn');
-        renderMapIndex();
-    }
-    document.getElementById('flashBtn').disabled = !S.romLoaded;
-}
-
-async function doOpenRom() {
-    if (!Bridge.tauri) { log('open: ROM file picker needs the desktop app', 'warn'); return; }
-    const input = document.getElementById('romFileInput');
-    input.onchange = async () => {
-        const f = input.files && input.files[0];
-        input.value = '';
-        if (!f) return;
-        log('open: reading ' + f.name + '…');
-        try {
-            const buf = await f.arrayBuffer();
-            const bytes = Array.from(new Uint8Array(buf));
-            // stage to temp dir so read_table/write_table/flash have a real path
-            const staged = await Bridge.invoke('save_rom_temp', { name: f.name, data: bytes });
-            S.romPath = String(staged);
-            await adoptRomBytes(bytes);
-        } catch (e) { log('open failed: ' + errMsg(e), 'err'); }
-    };
-    input.click();
-}
-
 async function doDump() {
     const btn = document.getElementById('dumpBtn');
     btn.disabled = true;
@@ -1536,19 +1765,32 @@ async function doDump() {
                 const m = /^DUMP_OK path=(.+)$/m.exec(String(res));
                 if (m) {
                     S.romPath = m[1].trim();
+                    S.romSource = 'dump';
                     const bytes = await Bridge.invoke('read_file_bin', { path: S.romPath });
-                    await adoptRomBytes(bytes);
+                    S.romBytes = bytes; // raw dump, kept for table parsing
+                    document.getElementById('saveRomBtn').disabled = false;
+                    S.currentTable = { fuel: null, timing: null };
+                    document.getElementById('fuelTitle').textContent = 'Fuel Map';
+                    document.getElementById('timingTitle').textContent = 'Timing Map';
+                    const def = Defs.matchRom(bytes);
+                    if (def) {
+                        const full = Defs.resolveBase(def);
+                        S.definition = full;
+                        S.romLoaded = true;
+                        document.getElementById('ecuId').textContent = full.romid.ecuid || full.romid.internalidstring;
+                        document.getElementById('romSize').textContent = Math.round(bytes.length / 1024) + ' KB';
+                        document.getElementById('defName').textContent = full.romid.xmlid + ' · ' + full.romid.memmodel;
+                        log(`dump: ${bytes.length} bytes — matched definition ${full.romid.xmlid} (${full.romid.memmodel}, ${full.romid.endian}-endian)`, 'ok');
+                        if (full.checksums.length) log(`dump: ${full.checksums.length} checksum block(s) registered (${full.checksums.map(c => c.type).join(', ')})`, 'info');
+                        await adoptDefinitionTables();
+                    } else {
+                        S.romLoaded = true;
+                        document.getElementById('romSize').textContent = Math.round(bytes.length / 1024) + ' KB';
+                        log('dump: no loaded definition matched this ROM — load its XML definition to identify it', 'warn');
+                        renderMapIndex();
+                    }
                 }
             } catch (e2) { log('dump: ROM loaded but identification failed: ' + errMsg(e2), 'warn'); }
-        } else {
-            // simulated dump with progress
-            for (let p = 0; p <= 100; p += 5) { setProgress(p); await sleep(90); }
-            S.romLoaded = true;
-            document.getElementById('ecuId').textContent = '8U92A';
-            document.getElementById('romSize').textContent = '512 KB';
-            document.getElementById('defName').textContent = 'SH7055';
-            log('dump: 524288 bytes in 97.2s (5.4 kB/s, npkern)', 'ok');
-            log('dump: ECUID 8U92A detected, definition SH7055 applied', 'ok');
         }
     } catch (e) {
         log('dump failed: ' + errMsg(e), 'err');
@@ -1569,11 +1811,8 @@ async function doFlash() {
         if (Bridge.tauri) {
             const res = await Bridge.invoke('flash_rom', { ecu: S.ecu, maps: { fuel: S.fuelMap, timing: S.timingMap } });
             log('flash: ' + JSON.stringify(res), 'ok');
-        } else {
-            for (let p = 0; p <= 100; p += 4) { setProgress(p); await sleep(110); }
-            log('flash: 8 blocks written, checksum OK', 'ok');
-            log('flash: ECU reset — kernel removed, new ROM active', 'ok');
         }
+
         S.dirty = false;
         document.getElementById('fuelDirty').innerHTML = '';
         document.getElementById('timingDirty').innerHTML = '';
@@ -1593,6 +1832,101 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 function renderAll() { renderFuelMap(); renderTimingMap(); updateGauges(); }
 
+
+/* ---------------- Save ROM (editor) ---------------- */
+document.getElementById('saveRomBtn').addEventListener('click', async () => {
+    try {
+        if (S.romSource === 'dump' && S.romPath) {
+            // dump mode: the file on disk is the truth (backend wrote the edits)
+            const bytes = await Bridge.invoke('read_file_bin', { path: S.romPath });
+            RomEditor.setBytes(new Uint8Array(bytes), S.romPath.split(/[\\/]/).pop());
+        }
+        log('save: ' + RomEditor.saveRom(), 'ok');
+    } catch (e) { log('save failed: ' + errMsg(e), 'err'); }
+});
+
+/* ---------------- Hex editor (ported from the Android app) ---------------- */
+let hexOff = 0;
+const HEX_ROWS = 16;
+function hexRender() {
+    const view = document.getElementById('hexView');
+    const info = document.getElementById('hexInfo');
+    if (!view || !info) return;
+    if (!S.romLoaded || !S.romBytes || !S.romBytes.length) {
+        view.innerHTML = '';
+        info.textContent = 'load a ROM to edit bytes';
+        return;
+    }
+    const n = S.romBytes.length;
+    hexOff = Math.max(0, Math.min(hexOff, n - 1));
+    const start = hexOff - (hexOff % 16);
+    let html = '';
+    for (let r = 0; r < HEX_ROWS; r++) {
+        const a = start + r * 16;
+        if (a >= n) break;
+        html += '<div class="hex-row"><span class="hex-addr">' +
+            a.toString(16).toUpperCase().padStart(8, '0') + '</span> ';
+        let asc = '';
+        for (let c = 0; c < 16; c++) {
+            const i = a + c;
+            if (i < n) {
+                const b = S.romBytes[i];
+                html += '<span class="hex-byte" data-i="' + i + '">' +
+                    b.toString(16).toUpperCase().padStart(2, '0') + '</span>';
+                asc += (b >= 32 && b < 127) ? String.fromCharCode(b) : '.';
+            } else {
+                html += '<span class="hex-byte hex-pad">  </span>';
+                asc += ' ';
+            }
+            if (c === 7) html += ' ';
+        }
+        html += ' <span class="hex-asc">' + asc.replace(/&/g, '&amp;').replace(/</g, '&lt;') + '</span></div>';
+    }
+    view.innerHTML = html;
+    info.textContent = '0x' + start.toString(16).toUpperCase() + ' / 0x' +
+        n.toString(16).toUpperCase() + ' — click a byte to edit';
+    view.querySelectorAll('.hex-byte[data-i]').forEach(el => {
+        el.addEventListener('click', async () => {
+            const i = +el.dataset.i;
+            const cur = S.romBytes[i].toString(16).toUpperCase().padStart(2, '0');
+            const v = prompt('Byte at 0x' + i.toString(16).toUpperCase() +
+                ' (current ' + cur + ') — enter hex 00-FF:');
+            if (v === null) return;
+            const p = parseInt(v.trim(), 16);
+            if (isNaN(p) || p < 0 || p > 255) { log('hex edit: bad value', 'err'); return; }
+            S.romBytes[i] = p;
+            markDirty();
+            try {
+                await writeTableSmart({
+                    romPath: S.romPath,
+                    address: addrHex(i),
+                    storagetype: 'uint8',
+                    endian: 'big',
+                    values: [p],
+                });
+            } catch (e) { log('hex edit: write sync failed: ' + errMsg(e), 'err'); }
+            log('hex edit: 0x' + i.toString(16).toUpperCase() + ' ' + cur + ' → ' +
+                p.toString(16).toUpperCase().padStart(2, '0'), 'ok');
+            hexRender();
+        });
+    });
+}
+function hexGoTo(addr) {
+    if (!S.romLoaded || !S.romBytes || !S.romBytes.length) { log('hex: load a ROM first', 'warn'); return; }
+    const n = S.romBytes.length;
+    hexOff = Math.max(0, Math.min(addr, n - 1));
+    hexRender();
+}
+document.getElementById('hexGo').addEventListener('click', () => {
+    const t = document.getElementById('hexAddr').value.trim();
+    if (!t) return;
+    const a = parseInt(t.replace(/^0x/i, ''), 16);
+    if (isNaN(a) || a < 0) { log('hex: bad address', 'err'); return; }
+    hexGoTo(a);
+});
+document.getElementById('hexPrev').addEventListener('click', () => hexGoTo(hexOff - HEX_ROWS * 16));
+document.getElementById('hexNext').addEventListener('click', () => hexGoTo(hexOff + HEX_ROWS * 16));
+
 /* ---------------- Boot ---------------- */
 seedMaps();
 renderSensors();
@@ -1602,7 +1936,7 @@ renderStatus();
 renderAll();
 setSim(true);
 log('FanTom dashboard ready — ' + Bridge.mode + ' mode', 'ok');
-log('bridge: ' + (Bridge.tauri ? 'native (Tauri invoke available)' : 'no native bridge, using simulator'), 'warn');
+log('bridge: native (Tauri invoke available)', 'ok');
 document.getElementById('footerNote').innerHTML = Bridge.tauri
     ? 'GhostTech FanTom · <b>native mode</b> — nisprog bridge active'
     : 'GhostTech FanTom · sim mode — connect a bridge (Tauri invoke) to drive live data';
@@ -1622,8 +1956,60 @@ document.getElementById('ecuSelect').addEventListener('change', (e) => {
     log('ECU family set to ' + S.ecu + ' — kernel npk_' + S.ecu, 'info');
 });
 document.getElementById('dumpBtn').addEventListener('click', doDump);
-document.getElementById('openBtn').addEventListener('click', doOpenRom);
 document.getElementById('flashBtn').addEventListener('click', doFlash);
+// Load ROM from file
+document.getElementById('loadRomBtn').addEventListener('click', () => {
+    document.getElementById('loadRomFile').click();
+});
+document.getElementById('loadRomFile').addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    log('load: reading ' + file.name + ' (' + file.size + ' bytes)...', 'info');
+    try {
+        const buf = await file.arrayBuffer();
+        const bytes = new Uint8Array(buf);
+        S.romBytes = bytes;
+        S.romPath = file.name;
+        S.romFileName = file.name;
+        S.romSource = 'file';
+        S.romLoaded = true;
+        S.dirty = false;
+        S.romSize = bytes.length;
+        S.currentTable = { fuel: null, timing: null };
+        // The editor engine holds the SAME array — grid edits, hex edits
+        // and Save ROM all operate on these exact bytes.
+        RomEditor.setBytes(bytes, file.name);
+        document.getElementById('flashBtn').disabled = false;
+        document.getElementById('saveRomBtn').disabled = false;
+        document.getElementById('fuelDirty').innerHTML = '';
+        document.getElementById('timingDirty').innerHTML = '';
+        log('load: ' + file.name + ' loaded (' + bytes.length + ' bytes) — editor mode: tables + hex edit in memory, Save ROM exports the file', 'ok');
+        // Match a definition against the file bytes — same flow as a dump.
+        try {
+            const def = (window.Defs && Defs.matchRom) ? Defs.matchRom(bytes) : null;
+            if (def) {
+                const full = Defs.resolveBase(def);
+                S.definition = full;
+                document.getElementById('ecuId').textContent = full.romid.ecuid || full.romid.internalidstring;
+                document.getElementById('romSize').textContent = Math.round(bytes.length / 1024) + ' KB';
+                document.getElementById('defName').textContent = full.romid.xmlid + ' · ' + full.romid.memmodel;
+                log('load: matched definition ' + full.romid.xmlid + ' (' + full.romid.memmodel + ', ' + full.romid.endian + '-endian)', 'ok');
+                await adoptDefinitionTables();
+            } else {
+                S.definition = null;
+                document.getElementById('romSize').textContent = Math.round(bytes.length / 1024) + ' KB';
+                log('load: no loaded definition matched this ROM — hex editor is live; table grids need its XML definition loaded', 'warn');
+                renderMapIndex();
+            }
+        } catch (e2) { log('load: ROM loaded but identification failed: ' + errMsg(e2), 'warn'); }
+        if (typeof renderAll === 'function') renderAll();
+        hexOff = 0;
+        hexRender();
+    } catch (err) {
+        log('load failed: ' + err.message, 'err');
+    }
+    e.target.value = '';
+});
 document.getElementById('consoleInput').addEventListener('keydown', async (e) => {
     if (e.key !== 'Enter') return;
     const cmd = e.target.value.trim();
@@ -1638,6 +2024,87 @@ document.getElementById('consoleInput').addEventListener('keydown', async (e) =>
         log('error: ' + errMsg(err), 'err');
     }
 });
+</script>
+
+<script>
+// CONSULT Live Data Polling
+var consultConnected = false;
+var consultPollInterval = null;
+
+async function consultConnect() {
+  var port = prompt("Enter COM port (e.g. COM10):", "COM10");
+  if (!port) return;
+  try {
+    var res = await Bridge.invoke('consult_connect', { port: port });
+    log('consult: ' + res, 'ok');
+    consultConnected = true;
+    startConsultPolling();
+  } catch (e) {
+    log('consult connect failed: ' + (e.message || e), 'err');
+  }
+}
+
+function startConsultPolling() {
+  if (consultPollInterval) clearInterval(consultPollInterval);
+  consultPollInterval = setInterval(async function() {
+    if (!consultConnected) return;
+    try {
+      var s = await Bridge.invoke('consult_sensors');
+      updateSensorDisplay(s);
+    } catch (e) {
+      // Silent fail during polling - don't spam console
+    }
+  }, 500); // Poll every 500ms
+}
+
+function stopConsultPolling() {
+  if (consultPollInterval) {
+    clearInterval(consultPollInterval);
+    consultPollInterval = null;
+  }
+  consultConnected = false;
+}
+
+function updateSensorDisplay(s) {
+  var map = {
+    's_rpm': s.rpm + '',
+    's_coolant': s.coolant_temp_c + '',
+    's_speed': s.vehicle_speed_kph + '',
+    's_voltage': s.battery_voltage.toFixed(1),
+    's_timing': s.ignition_timing + '',
+    's_tps': s.tps_percent + '',
+    's_maf': s.maf_voltage.toFixed(2),
+  };
+  for (var id in map) {
+    var el = document.getElementById(id);
+    if (el) el.textContent = map[id];
+  }
+  // Update bar gauges if they exist
+  if (typeof updateBars === 'function') updateBars(s);
+}
+
+// Add Connect button to Live Sensors panel
+(function() {
+  var panel = document.querySelector('#sensorList');
+  if (panel && panel.parentNode) {
+    var btnDiv = document.createElement('div');
+    btnDiv.style.cssText = 'margin-bottom:8px;display:flex;gap:6px;';
+    btnDiv.innerHTML = '<button class="btn" id="consultConnectBtn" style="font-size:0.72rem;"><i class="fas fa-plug"></i> Connect Live Data</button>' +
+      '<button class="btn" id="consultDisconnectBtn" style="font-size:0.72rem;" disabled><i class="fas fa-unplug"></i> Disconnect</button>';
+    panel.parentNode.insertBefore(btnDiv, panel);
+    document.getElementById('consultConnectBtn').addEventListener('click', async function() {
+      await consultConnect();
+      document.getElementById('consultConnectBtn').disabled = true;
+      document.getElementById('consultDisconnectBtn').disabled = false;
+    });
+    document.getElementById('consultDisconnectBtn').addEventListener('click', function() {
+      stopConsultPolling();
+      document.getElementById('consultConnectBtn').disabled = false;
+      document.getElementById('consultDisconnectBtn').disabled = true;
+      log('consult: disconnected', 'info');
+    });
+  }
+})();
 </script>
 </body>
 </html>
