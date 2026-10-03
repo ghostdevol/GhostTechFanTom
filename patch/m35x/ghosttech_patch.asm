@@ -1,337 +1,304 @@
 /* ============================================================================
-   GhostTech M35x patch — SH7058 (MEC35-972, ROM ID 1EH11E)
-   Implements Daniel's GhostTech patch spec (2026-10-02) line for line:
-     PATCH_ENTRY dispatcher + MAP_LOGIC mode select
-     GHOSTFIRE   static 2-step (launch)
-     GHOSTBURNER rolling 2-step
-     GHOSTFLAMES decel pops/bangs
-   Input combo: BRAKE + FOG (cruise buttons dead on this car).
+   GhostTech M35x patch v2 — SH7058 (MEC35-972, ROM ID 1EH11E)
+   ----------------------------------------------------------------------------
+   v2 REWRITE (2026-10-02, after disassembly passes 1-5). v1's mechanism —
+   "write the OEM rev-limiter variable" — is DEAD: five passes proved this
+   firmware has no limiter variable, no final fuel/timing RAM values, and no
+   RAM location of any kind that a patch running at executive rate can hold
+   (every candidate is republished/consumed per crank segment by its owner).
 
-   LAYOUT (identical structure to the spec; relocated to this ROM's real
-   free space — the erased run at 0x9DD98-0xFFFFF — because the spec's
-   0xC000 region holds live calibration data in this ROM):
-     PATCH_BASE + 0x000  PATCH_ENTRY / dispatch
-     PATCH_BASE + 0x700  parameter block (magic "GHOSTECH", tunable in hex)
-     PATCH_BASE + 0x800  MAP_LOGIC
-     PATCH_BASE + 0xA00  GHOSTFIRE
-     PATCH_BASE + 0xC00  GHOSTBURNER
-     PATCH_BASE + 0xE00  GHOSTFLAMES
+   THE DESIGN THAT SURVIVES — TWO HOOKS:
 
-   HOOK MODEL (classic trampoline): one call inside the OEM main loop is
-   redirected to PATCH_ENTRY. PATCH_ENTRY runs the dispatcher, then calls
-   the displaced OEM routine with registers untouched, then returns to the
-   loop. Feature blocks act through OEM mechanisms ("via OEM hooks" per
-   spec): the 2-steps write the OEM rev-limiter threshold variable;
-   GhostFlames offsets the OEM final timing / final fuel values in RAM.
+   HOOK 1 (the brain) — executive loop. The u32 call target at 0x0000F0A8
+   (stock: 0x00001C14, the per-cycle input service) is redirected to
+   PATCH_BRAIN. PATCH_BRAIN runs the mode logic every executive cycle
+   (once per 10 vec120 ticks), keeps its state in patch RAM at
+   0xFFFF4000 (proven unused, boot-cleared), then tail-jumps to the OEM
+   service 0x1C14, which returns to the loop. The OEM sees identical
+   registers and stack.
 
-   SYMBOLS: every hardware address lives in symbols.inc (RAM inputs, hook
-   target, OEM limiter variable, final timing/fuel). That file is written
-   from the ROM disassembly — it is the ONLY thing between this source
-   and a flashable binary. This source intentionally does not assemble
-   without it.
+   HOOK 2 (the hand) — scheduler entry. The first 12 bytes of the event
+   scheduler 0x00013150 (its r8-r13 register pushes — verified byte for
+   byte, no PC-relative content) are replaced by a jump to PATCH_SEG:
+       0x13150: D001        mov.l @(1,PC),r0     ; literal at 0x13158
+       0x13152: 402B        jmp   @r0
+       0x13154: 0009        nop
+       0x13156: 0009        nop
+       0x13158: .long       PATCH_SEG (0x0009E400)
+   PATCH_SEG runs per crank segment, in the firing path itself, with
+   r4 = channel mask, r5 = slot array pointer (0xFFFF2174):
+     - CUT flag set  -> return immediately: this segment commits NO
+       events. That is the 2-step cut (fuel+spark are one event stream
+       in this firmware — a hard cut).
+     - FLAMES offset nonzero -> add it to the six slot words (event
+       times) for this segment, then fall into the OEM prologue replay.
+     - otherwise -> replay the displaced pushes (r8-r13) and jump to
+       0x0001315C, the scheduler's original continuation. Byte-identical
+       behaviour to stock.
 
-   BUILD (once symbols.inc exists):
-     sh4-linux-gnu-as -o ghosttech_patch.o ghosttech_patch.asm
-     sh4-linux-gnu-ld -Ttext=0x0009E000 -o ghosttech_patch.elf ghosttech_patch.o
-     sh4-linux-gnu-objcopy -O binary ghosttech_patch.elf ghosttech_patch.bin
-   Then: splice ghosttech_patch.bin at 0x9E000 into a copy of
-   m35x_stock.bin, redirect the hook call to PATCH_ENTRY, fix the
-   checksum (nisckfix2 rules: sum @0x7CF8, xor @0x7CF0), flash the spare.
+   FEATURES IN THIS BUILD (honest scope):
+     GHOSTFIRE static 2-step — COMPLETE, test-arm version. With no proven
+       brake/speed/throttle inputs in this ECU (passes 2-5: fog absent,
+       brake/speed/throttle produced nowhere found), arming uses the one
+       input that is pinned — RPM:
+         ARM:    RPM in idle band (500-1600) for 20 executive cycles
+         CUT:    RPM >= 3500 target (release below 3400, hysteresis)
+         DISARM: RPM < 1400 for 30 cycles (lifted / back to idle),
+                 engine off, or 400 consecutive cut cycles (safety cap)
+     GHOSTBURNER rolling 2-step — NOT ARMED in this build: its speed
+       window has no proven speed input. Parameter retained in the block.
+     GHOSTFLAMES — the segment-hook slot-offset mechanism is BUILT and
+       live; its offset value comes from the parameter block (stock 0 =
+       no offset). Decel auto-trigger awaits a proven throttle/decel
+       input; until then the offset is a manual tuning knob only.
+   All thresholds are read from the parameter block at PATCH_BASE+0x700
+   every cycle — they are genuinely tunable in a hex editor.
+
+   RPM UNITS: RAM_RPM (0xFFFF8468) raw scale is INFERRED from the lookup
+   axes (coordinate = raw>>8, axis max 136 at ~6800rpm): raw = RPM x
+   256/50 = RPM x 5.12. Parameter defaults use that scale; the first
+   flash verifies it against a tach (if the hold point is off by the
+   scale ratio, correct the block values — no code change needed).
+
+   SPLICES (applied by the build script to a copy of m35x_stock.bin):
+     1. u32 @0x0000F0A8 := 0x0009E000            (brain hook)
+     2. bytes @0x13150..0x13157 := D001 402B 0009 0009
+        u32 @0x00013158 := 0x0009E400            (segment hook)
+     3. patch binary at 0x0009E000
+     4. checksum fix (sum @0x7CF8, xor @0x7CF0 — nisckfix2 rules)
+
+   FILE LAYOUT (offsets from PATCH_BASE; .org order is ascending):
+     +0x000 PATCH_BRAIN   +0x400 PATCH_SEG   +0x700 parameter block
    ============================================================================ */
 
         .text
         .align  2
-        .global _patch_entry
+        .global _patch_brain
+        .global _patch_seg
 
-        .include "symbols.inc"   /* HOOK_TARGET, RAM_RPM, RAM_SPEED, RAM_TPS,
-                                    RAM_BRAKE, RAM_FOG, OEM_LIMIT_VAR,
-                                    RAM_TIMING_FINAL, RAM_FUEL_FINAL,
-                                    PATCH_RAM_BASE — all from disassembly */
+        .include "symbols.inc"   /* every address below is PINNED by the
+                                    disassembly passes — see symbols.inc */
 
-/* ---- parameters (defaults from Daniel's spec set; stored in the parameter
-        block at +0x700 too, so they can be changed in a hex editor) ---- */
-        .equ    LAUNCH_RPM,        3500   /* static 2-step target (spec 3k-4k;
-                                             detailed spec: 3500, soft 3400,
-                                             hard 3550) */
-        .equ    LAUNCH_SPEED_MAX,  5      /* static active below this speed
-                                             (detailed spec: active < 5) */
-        .equ    ROLLING_RPM,       4200   /* GhostBurner target in window
-                                             (detailed spec: 4200) */
-        .equ    ROLLING_SPEED_MIN, 15     /* rolling window (detailed spec) */
-        .equ    ROLLING_SPEED_MAX, 85
-        .equ    FLAMES_RPM_MIN,    2500   /* decel flames above this RPM */
-        .equ    FLAMES_RETARD,     12     /* degrees of decel timing pull,
-                                             in RAM_TIMING_FINAL raw units */
-        .equ    STOCK_LIMIT,       6600   /* OEM rev limit, restored when
-                                             no 2-step mode is active */
-        /* mode codes written to patch RAM */
-        .equ    MODE_NORMAL,  0
-        .equ    MODE_STATIC,  1
-        .equ    MODE_ROLLING, 2
-        .equ    MODE_FLAMES,  3
+/* patch RAM offsets (PATCH_RAM_BASE = 0xFFFF4000, boot-cleared to 0) */
+        .equ    PR_MODE,   0    /* byte: 0 normal, 1 static armed */
+        .equ    PR_CUT,    1    /* byte: 1 = segment hook skips commits */
+        .equ    PR_ARMCNT, 2    /* byte: idle-band arm counter */
+        .equ    PR_RELCNT, 3    /* byte: release counter */
+        .equ    PR_CUTCNT, 4    /* u16: consecutive cut cycles */
+        .equ    PR_FLMOFF, 6    /* u16: slot offset applied by seg hook */
 
-/* patch RAM offsets (from PATCH_RAM_BASE) */
-        .equ    PR_MODE,       0   /* byte: current mode */
-        .equ    PR_LIMITDIRTY, 1   /* byte: 1 while we own OEM_LIMIT_VAR */
+/* parameter block offsets (PARAM_BLOCK = PATCH_BASE + 0x700, u16 words) */
+        .equ    PB_TGT,    10   /* cut target, raw RPM */
+        .equ    PB_HYST,   12   /* cut release, raw RPM */
+        .equ    PB_ARMHI,  14   /* arm band high, raw RPM */
+        .equ    PB_ARMLO,  16   /* arm band low, raw RPM */
+        .equ    PB_REL,    18   /* disarm RPM, raw */
+        .equ    PB_ARMCYC, 20   /* cycles in band to arm */
+        .equ    PB_RELCYC, 22   /* cycles below REL to disarm */
+        .equ    PB_CUTMAX, 24   /* max consecutive cut cycles */
+        .equ    PB_ROLL,   26   /* GhostBurner target (dormant) */
+        .equ    PB_FLMOFF, 28   /* GhostFlames slot offset (stock 0) */
 
 /* ============================================================================
-   BLOCK 1 — PATCH_ENTRY / DISPATCH   (+0x000)
-   Entered by the redirected OEM loop call (return address in PR).
-   Preserves r0-r7 + r8-r13 for the displaced OEM routine; feature code
-   below uses r8-r13 only.
+   PATCH_BRAIN — executive hook   (+0x000)
+   Entered by jsr from the executive loop (PR = return into the loop).
+   Preserves every register; tail-jumps to the OEM input service.
    ============================================================================ */
-_patch_entry:
-patch_entry:
+_patch_brain:
+patch_brain:
         sts.l   pr, @-r15
-        mov.l   r8,  @-r15
-        mov.l   r9,  @-r15
+        mov.l   r8, @-r15
+        mov.l   r9, @-r15
         mov.l   r10, @-r15
         mov.l   r11, @-r15
-        mov.l   r12, @-r15
-        mov.l   r13, @-r15
-
-        bsr     map_logic          /* decide mode, write PR_MODE */
-        nop
-
-        /* load MODE */
-        mov.l   L_patchram, r8
-        mov.b   @(PR_MODE, r8), r9
-        extu.b  r9, r9
-
-        mov     #MODE_STATIC, r0
-        cmp/eq  r0, r9
-        bt      pe_static
-        mov     #MODE_ROLLING, r0
-        cmp/eq  r0, r9
-        bt      pe_rolling
-        mov     #MODE_FLAMES, r0
-        cmp/eq  r0, r9
-        bt      pe_flames
-        bra     pe_limit_restore   /* normal: give the limiter back */
-        nop
-pe_static:
-        bsr     ghostfire
-        nop
-        bra     pe_out
-        nop
-pe_rolling:
-        bsr     ghostburner
-        nop
-        bra     pe_out
-        nop
-pe_flames:
-        bsr     ghostflames
-        nop
-        /* fall through to limiter restore as well */
-pe_limit_restore:
-        /* if we previously lowered the OEM limiter and no 2-step mode is
-           active anymore, restore the stock limit exactly once */
-        mov.l   L_patchram, r8
-        mov.b   @(PR_LIMITDIRTY, r8), r9
-        extu.b  r9, r9
+        mov.l   L_B_PRAM, r8          /* patch RAM base */
+        mov.l   L_B_PARAM, r11        /* parameter block */
+        mov.l   L_B_RPM, r9
+        mov.w   @r9, r9
+        extu.w  r9, r9                /* r9 = RPM raw */
+        /* live-copy the flames offset knob into patch RAM */
+        mov.w   @(PB_FLMOFF, r11), r10
+        mov.w   r10, @(PR_FLMOFF, r8)
+        /* dispatch on MODE */
+        mov.b   @(PR_MODE, r8), r10
+        extu.b  r10, r10
         mov     #1, r0
-        cmp/eq  r0, r9
-        bf      pe_out
-        mov.l   L_limitvar, r10
-        mov.l   L_stocklimit, r11
-        mov.w   r11, @r10                 /* OEM_LIMIT_VAR = STOCK_LIMIT */
-        mov     #0, r9
-        mov.b   r9, @(PR_LIMITDIRTY, r8)  /* clear dirty flag */
-pe_out:
-        mov.l   @r15+, r13
-        mov.l   @r15+, r12
+        cmp/eq  r0, r10
+        bt      pb_static
+        nop
+        /* ---- MODE_NORMAL: cut off; watch the idle-band arm gesture ---- */
+        mov     #0, r10
+        mov.b   r10, @(PR_CUT, r8)
+        mov.w   r10, @(PR_CUTCNT, r8)
+        mov.w   @(PB_ARMHI, r11), r10
+        cmp/hs  r10, r9               /* rpm >= ARMHI -> outside band */
+        bt      pb_arm_reset
+        nop
+        mov.w   @(PB_ARMLO, r11), r10
+        cmp/hs  r9, r10               /* ARMLO >= rpm -> below band */
+        bt      pb_arm_reset
+        nop
+        mov.b   @(PR_ARMCNT, r8), r10
+        add     #1, r10
+        mov.b   r10, @(PR_ARMCNT, r8)
+        mov.w   @(PB_ARMCYC, r11), r0
+        cmp/eq  r0, r10
+        bf      pb_out
+        nop
+        /* ARM GhostFire */
+        mov     #1, r10
+        mov.b   r10, @(PR_MODE, r8)
+        mov     #0, r10
+        mov.b   r10, @(PR_ARMCNT, r8)
+        mov.b   r10, @(PR_RELCNT, r8)
+        bra     pb_out
+        nop
+pb_arm_reset:
+        mov     #0, r10
+        mov.b   r10, @(PR_ARMCNT, r8)
+        bra     pb_out
+        nop
+        /* ---- MODE_STATIC (GhostFire armed) ---- */
+pb_static:
+        mov.w   @(PB_REL, r11), r10
+        cmp/hs  r10, r9               /* rpm >= REL -> not releasing */
+        bt      pb_norel
+        nop
+        /* rpm below REL: count toward disarm */
+        mov.b   @(PR_RELCNT, r8), r10
+        add     #1, r10
+        mov.b   r10, @(PR_RELCNT, r8)
+        mov.w   @(PB_RELCYC, r11), r0
+        cmp/eq  r0, r10
+        bf      pb_cutctl
+        nop
+        /* DISARM */
+        mov     #0, r10
+        mov.b   r10, @(PR_MODE, r8)
+        mov.b   r10, @(PR_CUT, r8)
+        mov.w   r10, @(PR_CUTCNT, r8)
+        bra     pb_out
+        nop
+pb_norel:
+        mov     #0, r10
+        mov.b   r10, @(PR_RELCNT, r8)
+        /* fall through to cut control */
+pb_cutctl:
+        mov.w   @(PB_TGT, r11), r10
+        cmp/hs  r10, r9               /* rpm >= TGT -> cut on */
+        bt      pb_cut_on
+        nop
+        mov.w   @(PB_HYST, r11), r10
+        cmp/hs  r10, r9               /* rpm >= HYST -> hold prior state */
+        bt      pb_cut_count
+        nop
+        /* rpm below HYST -> cut off */
+        mov     #0, r10
+        mov.b   r10, @(PR_CUT, r8)
+        mov.w   r10, @(PR_CUTCNT, r8)
+        bra     pb_out
+        nop
+pb_cut_on:
+        mov     #1, r10
+        mov.b   r10, @(PR_CUT, r8)
+pb_cut_count:
+        mov.b   @(PR_CUT, r8), r10
+        mov     #1, r0
+        cmp/eq  r0, r10
+        bf      pb_out
+        nop
+        mov.w   @(PR_CUTCNT, r8), r10
+        add     #1, r10
+        mov.w   r10, @(PR_CUTCNT, r8)
+        mov.w   @(PB_CUTMAX, r11), r0
+        cmp/hs  r0, r10               /* cut too long -> safety disarm */
+        bf      pb_out
+        nop
+        mov     #0, r10
+        mov.b   r10, @(PR_MODE, r8)
+        mov.b   r10, @(PR_CUT, r8)
+        mov.w   r10, @(PR_CUTCNT, r8)
+pb_out:
         mov.l   @r15+, r11
         mov.l   @r15+, r10
         mov.l   @r15+, r9
         mov.l   @r15+, r8
-        /* perform the OEM call this hook displaced, registers pristine */
-        mov.l   L_hooktarget, r0
-        jsr     @r0
-        nop
         lds.l   @r15+, pr
-        rts
+        mov.l   L_B_SVC, r0           /* OEM input service 0x1C14 */
+        jmp     @r0                   /* tail: it returns to the loop */
         nop
 
         .align  2
-L_patchram:    .long   PATCH_RAM_BASE
-L_limitvar:    .long   OEM_LIMIT_VAR
-L_stocklimit:  .long   STOCK_LIMIT
-L_hooktarget:  .long   HOOK_TARGET
+L_B_PRAM:   .long   PATCH_RAM_BASE
+L_B_PARAM:  .long   PARAM_BLOCK
+L_B_RPM:    .long   RAM_RPM
+L_B_SVC:    .long   OEM_INPUT_SVC
 
 /* ============================================================================
-   PARAMETER BLOCK   (+0x700) — findable + tunable in a hex editor
+   PATCH_SEG — segment hook   (+0x400)
+   Entered by JMP from scheduler entry 0x13150 (PR = scheduler caller's
+   return). r4 = mask arg, r5 = slot array ptr. Uses only caller-scratch
+   registers (r0-r3, r6) — the scheduler's own contract.
+   ============================================================================ */
+        .org    0x400
+_patch_seg:
+patch_seg:
+        mov.l   L_S_PRAM, r1          /* patch RAM base */
+        mov.b   @(PR_CUT, r1), r0
+        tst     r0, r0
+        bf      seg_skip              /* CUT set -> skip this commit */
+        nop
+        mov.w   @(PR_FLMOFF, r1), r0  /* GhostFlames slot offset */
+        tst     r0, r0
+        bt      seg_pass
+        nop
+        /* add the offset to this segment's six slot words */
+        mov     r5, r3
+        mov     #6, r2
+seg_floop:
+        mov.w   @r3, r6
+        add     r0, r6
+        mov.w   r6, @r3
+        add     #2, r3
+        dt      r2
+        bf      seg_floop
+        nop
+seg_pass:
+        /* replay the scheduler's displaced prologue (0x13150..0x1315B) */
+        mov.l   r8, @-r15
+        mov.l   r9, @-r15
+        mov.l   r10, @-r15
+        mov.l   r11, @-r15
+        mov.l   r12, @-r15
+        mov.l   r13, @-r15
+        mov.l   L_S_RESUME, r0        /* 0x1315C */
+        jmp     @r0
+        nop
+seg_skip:
+        rts                           /* no events committed this segment */
+        nop
+
+        .align  2
+L_S_PRAM:   .long   PATCH_RAM_BASE
+L_S_RESUME: .long   SCHED_RESUME
+
+/* ============================================================================
+   PARAMETER BLOCK   (+0x700) — read by the brain every cycle.
+   RPM values are RAW (raw = RPM x 5.12, inferred scale — see header).
    ============================================================================ */
         .org    0x700
 param_block:
-        .ascii  "GHOSTECH"                /* magic */
-        .word   0x0001                    /* version */
-        .word   LAUNCH_RPM
-        .word   LAUNCH_SPEED_MAX
-        .word   ROLLING_RPM
-        .word   ROLLING_SPEED_MIN
-        .word   ROLLING_SPEED_MAX
-        .word   FLAMES_RPM_MIN
-        .word   FLAMES_RETARD
-        .word   STOCK_LIMIT
-
-/* ============================================================================
-   BLOCK 2 — MAP / MODE LOGIC   (+0x800)
-   Reads RPM, speed, throttle, brake, fog from RAM. Writes PR_MODE.
-   Priority (per spec): static > rolling > flames > normal.
-   Uses r8-r13. Clobbers r0 (scratch) — caller saved the OEM context.
-   ============================================================================ */
-        .org    0x800
-map_logic:
-        sts.l   pr, @-r15
-        /* combo = brake && fog */
-        mov.l   L_ram_brake, r8
-        mov.b   @r8, r9
-        mov.l   L_ram_fog, r8
-        mov.b   @r8, r10
-        and     r10, r9                   /* nonzero only if both set */
-        /* speed */
-        mov.l   L_ram_speed, r8
-        mov.w   @r8, r10
-        extu.w  r10, r10
-        /* --- static: combo && speed < LAUNCH_SPEED_MAX --- */
-        tst     r9, r9
-        bt      ml_not_static
-        mov     #LAUNCH_SPEED_MAX, r0
-        cmp/hi  r0, r10                   /* T=1 if speed > max */
-        bt      ml_not_static
-        mov     #MODE_STATIC, r11
-        bra     ml_write
-        nop
-ml_not_static:
-        /* --- rolling: combo && ROLLING_SPEED_MIN <= speed <= MAX --- */
-        tst     r9, r9
-        bt      ml_not_rolling
-        mov     #ROLLING_SPEED_MIN, r0
-        cmp/hi  r10, r0                   /* T=1 if min > speed */
-        bt      ml_not_rolling
-        mov     #ROLLING_SPEED_MAX, r0
-        cmp/hi  r0, r10                   /* T=1 if speed > max */
-        bt      ml_not_rolling
-        mov     #MODE_ROLLING, r11
-        bra     ml_write
-        nop
-ml_not_rolling:
-        /* --- flames: throttle closed && RPM > FLAMES_RPM_MIN --- */
-        mov.l   L_ram_tps, r8
-        mov.w   @r8, r10
-        extu.w  r10, r10
-        mov.l   L_tps_closed, r0
-        cmp/hi  r0, r10                   /* T=1 if TPS above closed */
-        bt      ml_normal
-        mov.l   L_ram_rpm, r8
-        mov.w   @r8, r10
-        extu.w  r10, r10
-        mov     #FLAMES_RPM_MIN, r0
-        cmp/hi  r0, r10                   /* T=1 if RPM above threshold */
-        bf      ml_normal
-        mov     #MODE_FLAMES, r11
-        bra     ml_write
-        nop
-ml_normal:
-        mov     #MODE_NORMAL, r11
-ml_write:
-        mov.l   L_patchram2, r8
-        mov.b   r11, @(PR_MODE, r8)
-        lds.l   @r15+, pr
-        rts
-        nop
-
-        .align  2
-L_ram_brake:   .long   RAM_BRAKE
-L_ram_fog:     .long   RAM_FOG
-L_ram_speed:   .long   RAM_SPEED
-L_ram_tps:     .long   RAM_TPS
-L_ram_rpm:     .long   RAM_RPM
-L_tps_closed:  .long   TPS_CLOSED_MAX   /* from symbols.inc: raw TPS value
-                                           at/below which throttle = closed */
-L_patchram2:   .long   PATCH_RAM_BASE
-
-/* ============================================================================
-   BLOCK 3 — GHOSTFIRE: STATIC 2-STEP / LAUNCH   (+0xA00)
-   Holds the OEM rev limiter at LAUNCH_RPM while MODE_STATIC is active.
-   The OEM limiter performs the actual fuel/ignition cut (OEM hook).
-   ============================================================================ */
-        .org    0xA00
-ghostfire:
-        mov.l   L_limitvar3, r8
-        mov     #LAUNCH_RPM, r9
-        mov.w   r9, @r8                   /* OEM_LIMIT_VAR = LAUNCH_RPM */
-        mov.l   L_patchram3, r8
-        mov     #1, r9
-        mov.b   r9, @(PR_LIMITDIRTY, r8)
-        rts
-        nop
-
-        .align  2
-L_limitvar3:   .long   OEM_LIMIT_VAR
-L_patchram3:   .long   PATCH_RAM_BASE
-
-/* ============================================================================
-   BLOCK 4 — GHOSTBURNER: ROLLING 2-STEP   (+0xC00)
-   Holds the OEM rev limiter at ROLLING_RPM while MODE_ROLLING is active
-   (mode logic already enforced the speed window). Target is a fixed
-   in-window value in this revision; a speed/load target table is the
-   documented next step once the load variable is pinned.
-   ============================================================================ */
-        .org    0xC00
-ghostburner:
-        mov.l   L_limitvar4, r8
-        mov     #ROLLING_RPM, r9
-        mov.w   r9, @r8                   /* OEM_LIMIT_VAR = ROLLING_RPM */
-        mov.l   L_patchram4, r8
-        mov     #1, r9
-        mov.b   r9, @(PR_LIMITDIRTY, r8)
-        rts
-        nop
-
-        .align  2
-L_limitvar4:   .long   OEM_LIMIT_VAR
-L_patchram4:   .long   PATCH_RAM_BASE
-
-/* ============================================================================
-   BLOCK 5 — GHOSTFLAMES: DECEL POPS/BANGS   (+0xE00)
-   While MODE_FLAMES is active (throttle closed, RPM above threshold —
-   decided in MAP_LOGIC): pull FLAMES_RETARD degrees from the OEM final
-   timing value and enrich the OEM final fuel value by ~+15%, so unburnt
-   fuel reaches the exhaust and ignites there. Offsets the OEM's own
-   final values; the OEM still computes and applies them (OEM hooks).
-   ============================================================================ */
-        .org    0xE00
-ghostflames:
-        /* timing: RAM_TIMING_FINAL -= FLAMES_RETARD */
-        mov.l   L_timingfinal, r8
-        mov.w   @r8, r9
-        mov     #FLAMES_RETARD, r10
-        sub     r10, r9
-        mov.w   r9, @r8
-        /* fuel: RAM_FUEL_FINAL enriched by ~+15%:
-           add v>>3 (+12.5%) and v>>5 (+3.125%) ~= +15.6% */
-        mov.l   L_fuelfinal, r8
-        mov.w   @r8, r9
-        extu.w  r9, r9
-        mov     r9, r10
-        shlr    r10
-        shlr    r10
-        shlr    r10                       /* r10 = v / 8  (+12.5%) */
-        mov     r9, r11
-        shlr    r11
-        shlr    r11
-        shlr    r11
-        shlr    r11
-        shlr    r11                       /* r11 = v / 32 (+3.125%) */
-        add     r11, r10                  /* ~ +15.6% total */
-        add     r10, r9
-        mov.w   r9, @r8
-        rts
-        nop
-
-        .align  2
-L_timingfinal: .long   RAM_TIMING_FINAL
-L_fuelfinal:   .long   RAM_FUEL_FINAL
+        .ascii  "GHOSTECH"            /* +0  magic */
+        .word   0x0002                /* +8  version 2 */
+        .word   17920                 /* +10 TGT    3500 rpm */
+        .word   17408                 /* +12 HYST   3400 rpm */
+        .word   8192                  /* +14 ARMHI  1600 rpm */
+        .word   2560                  /* +16 ARMLO   500 rpm */
+        .word   7168                  /* +18 REL    1400 rpm */
+        .word   20                    /* +20 cycles in band to arm */
+        .word   30                    /* +22 cycles below REL to disarm */
+        .word   400                   /* +24 max consecutive cut cycles */
+        .word   21504                 /* +26 ROLL   4200 rpm (dormant) */
+        .word   0                     /* +28 FLMOFF slot offset (stock 0) */
 
         .end
