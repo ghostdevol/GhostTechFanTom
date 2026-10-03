@@ -116,108 +116,110 @@ patch_brain:
         mov.l   L_B_RPM, r9
         mov.w   @r9, r9
         extu.w  r9, r9                /* r9 = RPM raw */
-        /* live-copy the flames offset knob into patch RAM */
-        mov.w   @(PB_FLMOFF, r11), r10
-        mov.w   r10, @(PR_FLMOFF, r8)
+        /* live-copy the flames offset knob into patch RAM.
+           NOTE: SH @(disp,Rn) byte/word forms are R0-implicit — every
+           patch-RAM / parameter access below goes through R0. */
+        mov.w   @(PB_FLMOFF, r11), r0
+        mov.w   r0, @(PR_FLMOFF, r8)
         /* dispatch on MODE */
-        mov.b   @(PR_MODE, r8), r10
-        extu.b  r10, r10
-        mov     #1, r0
-        cmp/eq  r0, r10
+        mov.b   @(PR_MODE, r8), r0
+        cmp/eq  #1, r0
         bt      pb_static
         nop
         /* ---- MODE_NORMAL: cut off; watch the idle-band arm gesture ---- */
-        mov     #0, r10
-        mov.b   r10, @(PR_CUT, r8)
-        mov.w   r10, @(PR_CUTCNT, r8)
-        mov.w   @(PB_ARMHI, r11), r10
-        cmp/hs  r10, r9               /* rpm >= ARMHI -> outside band */
+        mov     #0, r0
+        mov.b   r0, @(PR_CUT, r8)
+        mov.w   r0, @(PR_CUTCNT, r8)
+        mov.w   @(PB_ARMHI, r11), r0
+        cmp/hs  r0, r9                /* rpm >= ARMHI -> outside band */
         bt      pb_arm_reset
         nop
-        mov.w   @(PB_ARMLO, r11), r10
-        cmp/hs  r9, r10               /* ARMLO >= rpm -> below band */
+        mov.w   @(PB_ARMLO, r11), r0
+        cmp/hs  r9, r0                /* ARMLO >= rpm -> below band */
         bt      pb_arm_reset
         nop
-        mov.b   @(PR_ARMCNT, r8), r10
-        add     #1, r10
-        mov.b   r10, @(PR_ARMCNT, r8)
+        mov.b   @(PR_ARMCNT, r8), r0
+        add     #1, r0
+        mov     r0, r10
+        mov.b   r0, @(PR_ARMCNT, r8)
         mov.w   @(PB_ARMCYC, r11), r0
         cmp/eq  r0, r10
         bf      pb_out
         nop
         /* ARM GhostFire */
-        mov     #1, r10
-        mov.b   r10, @(PR_MODE, r8)
-        mov     #0, r10
-        mov.b   r10, @(PR_ARMCNT, r8)
-        mov.b   r10, @(PR_RELCNT, r8)
+        mov     #1, r0
+        mov.b   r0, @(PR_MODE, r8)
+        mov     #0, r0
+        mov.b   r0, @(PR_ARMCNT, r8)
+        mov.b   r0, @(PR_RELCNT, r8)
         bra     pb_out
         nop
 pb_arm_reset:
-        mov     #0, r10
-        mov.b   r10, @(PR_ARMCNT, r8)
+        mov     #0, r0
+        mov.b   r0, @(PR_ARMCNT, r8)
         bra     pb_out
         nop
         /* ---- MODE_STATIC (GhostFire armed) ---- */
 pb_static:
-        mov.w   @(PB_REL, r11), r10
-        cmp/hs  r10, r9               /* rpm >= REL -> not releasing */
+        mov.w   @(PB_REL, r11), r0
+        cmp/hs  r0, r9                /* rpm >= REL -> not releasing */
         bt      pb_norel
         nop
         /* rpm below REL: count toward disarm */
-        mov.b   @(PR_RELCNT, r8), r10
-        add     #1, r10
-        mov.b   r10, @(PR_RELCNT, r8)
+        mov.b   @(PR_RELCNT, r8), r0
+        add     #1, r0
+        mov     r0, r10
+        mov.b   r0, @(PR_RELCNT, r8)
         mov.w   @(PB_RELCYC, r11), r0
         cmp/eq  r0, r10
         bf      pb_cutctl
         nop
         /* DISARM */
-        mov     #0, r10
-        mov.b   r10, @(PR_MODE, r8)
-        mov.b   r10, @(PR_CUT, r8)
-        mov.w   r10, @(PR_CUTCNT, r8)
+        mov     #0, r0
+        mov.b   r0, @(PR_MODE, r8)
+        mov.b   r0, @(PR_CUT, r8)
+        mov.w   r0, @(PR_CUTCNT, r8)
         bra     pb_out
         nop
 pb_norel:
-        mov     #0, r10
-        mov.b   r10, @(PR_RELCNT, r8)
+        mov     #0, r0
+        mov.b   r0, @(PR_RELCNT, r8)
         /* fall through to cut control */
 pb_cutctl:
-        mov.w   @(PB_TGT, r11), r10
-        cmp/hs  r10, r9               /* rpm >= TGT -> cut on */
+        mov.w   @(PB_TGT, r11), r0
+        cmp/hs  r0, r9                /* rpm >= TGT -> cut on */
         bt      pb_cut_on
         nop
-        mov.w   @(PB_HYST, r11), r10
-        cmp/hs  r10, r9               /* rpm >= HYST -> hold prior state */
+        mov.w   @(PB_HYST, r11), r0
+        cmp/hs  r0, r9                /* rpm >= HYST -> hold prior state */
         bt      pb_cut_count
         nop
         /* rpm below HYST -> cut off */
-        mov     #0, r10
-        mov.b   r10, @(PR_CUT, r8)
-        mov.w   r10, @(PR_CUTCNT, r8)
+        mov     #0, r0
+        mov.b   r0, @(PR_CUT, r8)
+        mov.w   r0, @(PR_CUTCNT, r8)
         bra     pb_out
         nop
 pb_cut_on:
-        mov     #1, r10
-        mov.b   r10, @(PR_CUT, r8)
-pb_cut_count:
-        mov.b   @(PR_CUT, r8), r10
         mov     #1, r0
-        cmp/eq  r0, r10
+        mov.b   r0, @(PR_CUT, r8)
+pb_cut_count:
+        mov.b   @(PR_CUT, r8), r0
+        cmp/eq  #1, r0
         bf      pb_out
         nop
-        mov.w   @(PR_CUTCNT, r8), r10
-        add     #1, r10
-        mov.w   r10, @(PR_CUTCNT, r8)
+        mov.w   @(PR_CUTCNT, r8), r0
+        add     #1, r0
+        mov     r0, r10
+        mov.w   r0, @(PR_CUTCNT, r8)
         mov.w   @(PB_CUTMAX, r11), r0
         cmp/hs  r0, r10               /* cut too long -> safety disarm */
         bf      pb_out
         nop
-        mov     #0, r10
-        mov.b   r10, @(PR_MODE, r8)
-        mov.b   r10, @(PR_CUT, r8)
-        mov.w   r10, @(PR_CUTCNT, r8)
+        mov     #0, r0
+        mov.b   r0, @(PR_MODE, r8)
+        mov.b   r0, @(PR_CUT, r8)
+        mov.w   r0, @(PR_CUTCNT, r8)
 pb_out:
         mov.l   @r15+, r11
         mov.l   @r15+, r10

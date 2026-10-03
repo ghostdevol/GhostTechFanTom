@@ -51,6 +51,11 @@ records (`m35x-disasm-pass1..5-2026-10-02.md`).
 ## Status
 Source: **written, addresses pinned** (hook sites, RPM `0xFFFF8468`,
 patch RAM `0xFFFF4000`, scheduler `0x13150` + resume `0x1315C`).
-Remaining step: assemble the source to bytes (no SH assembler on the
-build VM — a verified hand-assembly is in progress), splice, checksum,
-flash the spare with nisprog.
+**Built 2026-10-02:** `roms/m35x_tuned_v2.bin` (sha256
+`29dfc3a7d6105358…`) via `build_v2.py` — hand-assembly with every
+encoding family calibrated against a decoder and the full block
+disassembly verified (all branch targets, pool references, displaced
+prologue); stock checksum rule re-proven on the stock image before
+application; diff audit shows only the 4 intended regions changed.
+Flash the spare with nisprog (`flrom`), then verify on the car:
+idle arms it, rev holds ~3500, drop to idle releases.
