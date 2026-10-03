@@ -925,6 +925,7 @@
                         <button class="btn" id="loadRomBtn"><i class="fas fa-folder-open"></i> Load ROM</button>
                         <input type="file" id="loadRomFile" accept=".bin,.rom" style="display:none;">
                         <button class="btn" id="saveRomBtn" disabled><i class="fas fa-save"></i> Save ROM</button>
+                        <button class="btn" id="exportMapBtn"><i class="fas fa-map"></i> Export Map</button>
                     </div>
                     <div class="progress-wrap" id="progressWrap"><div class="progress-fill" id="progressFill"></div></div>
                     <div class="sensor-list" style="margin-top:0.75rem;">
@@ -1326,6 +1327,7 @@
 
 <script src="definitions.js"></script>
 <script src="js/rom-editor.js"></script>
+<script src="js/defmap-export.js"></script>
 <script src="js/tier-tunes-9.js"></script>
 <script src="js/tune-sliders.js"></script>
 <script src="js/detonation-calculator.js"></script>
@@ -1832,6 +1834,15 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 function renderAll() { renderFuelMap(); renderTimingMap(); updateGauges(); }
 
+
+/* ---------------- Export address map ---------------- */
+document.getElementById('exportMapBtn').addEventListener('click', () => {
+    try {
+        const st = DefMapExport.exportAll();
+        log('map export: ADDRESS-MAP.md saved — ' + st.defs + ' definition(s), ' +
+            st.tablesAddressed + ' addressed table(s), ' + st.checksumRows + ' checksum slot(s)', 'ok');
+    } catch (e) { log('map export failed: ' + errMsg(e), 'err'); }
+});
 
 /* ---------------- Save ROM (editor) ---------------- */
 document.getElementById('saveRomBtn').addEventListener('click', async () => {
